@@ -1,3 +1,7 @@
+nbproject
+Makefile
+Makefile.old
+
 # Compiled Object files
 *.slo
 *.lo
