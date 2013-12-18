@@ -1,22 +1,32 @@
 /* TODO:
  * - note off s nastavitelnou dlzkou
  * - indikacia na ktorej som stranke
- * - priradenie sekvencii k osmim sipkam napravo
- *		- 8 sekv. na stranku
+ * - priradenie sekvencii k osmim sipkam napravo (indikacia kde uz je pridelena sekvencia a ci hra)
+ *		- max 8 sekv. na stranku (vsak moze byt aj menej a mozme mat viac stranok a na kazdej len 2-3 sekv.)
  *		- vytvorenie novej konkretnej sekv stlacenim sipky namiesto session
  *		- selectovanie sekvencie sipkami
- * - editovanie start, end a casovania sekvencie
- * - vizualna indikacia casovania sekvencie pri vytvarani
+ *	- default rychle vytvorenie sekvencie s 8 krokmi na najblizsom volnom riadku, nasledna moznost editovat start a end
+ *	- editovanie start, end a casovania sekvencie
+ *	- vizualna indikacia casovania sekvencie pri vytvarani (sipky vpravo? alebo vyhradime miesto v note pickeri?)
+ *		- casovanie v notepickeri - prve dva riadky x/y takt 1/1...1/8, 2/1...2/8 ... 8/1...8/8
  * - polovicny jas LED (hlavne pre oranzovu)
+ *	- aktivna sekvencia vzdy oznacena slabsim svietenim 
  * - moznost zapnut hrania noty v notepickeri (napr. ak neexistuje aktualna sekvencia - toto som zakomentoval) alebo ked aktualna sekvencia neobsahuje zapnute noty
  * 
- * - zlvast celostrankove sekvencie pre lahke hranie not 
+ * - zvlast celostrankove sekvencie pre lahke hranie not 
+ *		- zakladnu toninu udava ton sekvencie, jednotlive noty maju info o offsete
+ *		- nastavitelne rozne stupnice offsetov (pravymi sipkami? toggle pre rozne kombinacie? napr. jedna z moznosti pocet tonov v oktave ako ma prop.figure)
+ *		- pri rozbaleni sekvencie do offset-selectoru posuvanie pozicie v sekvencii (ak je dlhsia ako 8) a posuvanie pre moznost volit z viac ako 8 offsetov (ako pri toneselectore)
+ *		- skusit ci by usetrilo pamet limitovany maly pocet rozbalitelnych tono-offsetovych sekvencii, ostatne iba bicie jednotonove (s 8 bajtovym polom pre 1bitove noty)
  * 
  * - BPM nastavovanie (tapovanim mixer padu?)
  * - start a stop vsetkych sekvencii (aj metronomu) pre MIDI casovanie/synchronizaciu
  * - MIDI vstup pre synchronizaciu (nacitanie casovania z prichadzajuceho midi signalu)
  *		- MIDI merge zo vstupu do vystupu
- *		- zadavanie not cez MIDI vstup
+ *		- cez MIDI vstup:
+ *			- vyber noty pre sekvenciu 
+ *			- nastavovanie offsetov v note-offsetovej sekvencii
+ *			- nacasovane zadavanie not (live rec) do nahravanej sekvencie
  * 
  * 
  */
