@@ -1,11 +1,16 @@
-#define PAD_RED_VALUE 224 //3bits B11100000 (shift 5) (was 128)
-#define PAD_GREEN_VALUE 28 //3bits B00011100 (shift 2)  (was 64)
+#define PAD_RED_BIT_VALUE 224 //3bits B11100000 (shift 5) (was 128)
+#define PAD_RED_SHIFT 5
+#define PAD_GREEN_BIT_VALUE 28 //3bits B00011100 (shift 2)  (was 64)
+#define PAD_GREEN_SHIFT 2
+
 #define PAD_VALUE 3 //2bits B11 no shifting //63
 #define PAD_THRESHOLD 10
+
 unsigned char pads[80];
 unsigned char lastBank = 3;
 unsigned char nextBank = 0;
 unsigned long lastBankScanTime = 0;
+unsigned char multiplexCycle = 0;
 
 //unsigned long scanBankCount = 0;
 //unsigned long firstScanBankTime = 0;
@@ -31,7 +36,7 @@ void nlpCoreInit() {
 }
 
 void nlpCoreScanBank() {
-	if (currentTime > lastBankScanTime + 400) {
+	if (currentTime > lastBankScanTime + 380) {
 		lastBankScanTime = currentTime;
 		/* * /
 		if (firstScanBankTime==0 && scanBankCount==0) firstScanBankTime = currentTime;
@@ -48,13 +53,20 @@ void nlpCoreScanBank() {
 		resetBank();
 		delayMicroseconds(18);
 		nextBank = (lastBank + 1) % 4;
+		if (0==nextBank) { multiplexCycle+=multiplexCycle%8; }
 		for (unsigned char biti = 0; biti < 40; biti++) {
-			char ledGreenIndex = (char) pgm_read_byte(&(bankBitsGreenLed[nextBank][biti]));
-			char ledRedIndex = (char) pgm_read_byte(&(bankBitsRedLed[nextBank][biti]));
-			if (
-					(ledGreenIndex >= 0 && getLedGreen(ledGreenIndex)) ||
-					(ledRedIndex >= 0 && getLedRed(ledRedIndex))
-					) {
+			unsigned char ledBitValue = 0;
+			char ledBitIndex = (char) pgm_read_byte(&(bankBitsGreenLed[nextBank][biti]));
+			if (ledBitIndex >= 0) {
+				ledBitValue = getLedGreen(ledBitIndex);
+			} else {
+				ledBitIndex = (char) pgm_read_byte(&(bankBitsRedLed[nextBank][biti]));
+				if (ledBitIndex >= 0) {
+					ledBitValue = getLedRed(ledBitIndex);
+				}
+			}
+			//if (ledBitValue > 0 && (multiplexCycle & (biti/5) == (biti/5))) { //test multiplexting blik
+			if ((ledBitValue == LED_ON) || (multiplexCycle & ledBitValue)==ledBitValue) { //111=LED_ON=full 11=slabo 1=silno
 				setLedBit(true);
 			} else {
 				setLedBit(false);
@@ -93,52 +105,35 @@ void setPadValue(unsigned char padIndex, unsigned char newPadValue) {
 	resetPad(padIndex);
 	pads[padIndex] |= newPadValue;
 }
-/*
-void incPad(unsigned char padIndex) {
-	if (!getPad(padIndex)) {
-		setPadValue(padIndex, 1 + getPadValue(padIndex));
-	}
-}
 
-void decPad(unsigned char padIndex) {
-	if (getPadValue(padIndex) > 0) {
-		setPadValue(padIndex, getPadValue(padIndex) - 1);
-	}
-}
-
-boolean getPad(unsigned char padIndex) {
-	return (pads[padIndex] & PAD_VALUE) > PAD_THRESHOLD; //no shifting
-}
-unsigned char getPadValue(unsigned char padIndex) {
-	return (pads[padIndex] & PAD_VALUE); //no shifting
-}
-*/
 boolean getPad(unsigned char padIndex) {
 	return (pads[padIndex] & PAD_VALUE) != 0; //no shifting
 }
 
 
 boolean getLedRed(unsigned char ledIndex) {
-	return 0 != (pads[ledIndex] & PAD_RED_VALUE);
+	return (pads[ledIndex] & PAD_RED_BIT_VALUE)>>PAD_RED_SHIFT;
 }
 
-void setLedRed(unsigned char ledIndex, boolean ledOn) {
-	if (ledOn) {
-		pads[ledIndex] |= PAD_RED_VALUE;
+void setLedRed(unsigned char ledIndex, unsigned char newLedBitValue) {
+	if (newLedBitValue > 0) {
+		pads[ledIndex] &= ~PAD_RED_BIT_VALUE;
+		pads[ledIndex] |= (PAD_RED_BIT_VALUE & (newLedBitValue << PAD_RED_SHIFT));
 	} else {
-		pads[ledIndex] &= ~PAD_RED_VALUE;
+		pads[ledIndex] &= ~PAD_RED_BIT_VALUE;
 	}
 }
 
 boolean getLedGreen(unsigned char ledIndex) {
-	return 0 != (pads[ledIndex] & PAD_GREEN_VALUE);
+	return (pads[ledIndex] & PAD_GREEN_BIT_VALUE)>>PAD_GREEN_SHIFT;
 }
 
-void setLedGreen(unsigned char ledIndex, boolean ledOn) {
-	if (ledOn) {
-		pads[ledIndex] |= PAD_GREEN_VALUE;
+void setLedGreen(unsigned char ledIndex, unsigned char newLedBitValue) {
+	if (newLedBitValue > 0) {
+		pads[ledIndex] &= ~PAD_GREEN_BIT_VALUE;
+		pads[ledIndex] |= (PAD_GREEN_BIT_VALUE & (newLedBitValue << PAD_GREEN_SHIFT));
 	} else {
-		pads[ledIndex] &= ~PAD_GREEN_VALUE;
+		pads[ledIndex] &= ~PAD_GREEN_BIT_VALUE;
 	}
 }
 
