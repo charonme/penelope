@@ -1,14 +1,17 @@
 /* TODO:
  * - note off s nastavitelnou dlzkou
  * - indikacia na ktorej som stranke
- * - priradenie sekvencii k osmim sipkam napravo (indikacia kde uz je pridelena sekvencia a ci hra)
+ * - priradenie sekvencii k osmim sipkam napravo (indikacia kde uz je pridelena sekvencia, ci hra, ci je aktivna, ci sa akurat edituje start/stop)
  *		- max 8 sekv. na stranku (vsak moze byt aj menej a mozme mat viac stranok a na kazdej len 2-3 sekv.)
  *		- vytvorenie novej konkretnej sekv stlacenim sipky namiesto session
- *		- selectovanie sekvencie sipkami
- *	- default rychle vytvorenie sekvencie s 8 krokmi na najblizsom volnom riadku, nasledna moznost editovat start a end
+ *		- selectovanie aktivnej sekvencie sipkami s indikaciou (znovu stlacenie sipky aktivnej sekv aktivuje editovanie jej start a end? alebo zastavi jej prehravanie?)
+ *	- default rychle vytvorenie sekvencie s 8 krokmi na najblizsom volnom riadku, (nasledna moznost editovat start a end? alebo po znovu stlaceni?)
  *	- editovanie start, end a casovania sekvencie
  *	- vizualna indikacia casovania sekvencie pri vytvarani (sipky vpravo? alebo vyhradime miesto v note pickeri?)
- *		- casovanie v notepickeri - prve dva riadky x/y takt 1/1...1/8, 2/1...2/8 ... 8/1...8/8
+ *		- casovanie v notepickeri - prve dva riadky? 
+ *			- rychlost: stvrtove rozdeli na cele, polove, stvrtove, osminove, trioly rozdeli na trioly, sextoly atd
+ *			- stvrtove, trioly, kvintoly a septoly
+ *			
  * - polovicny jas LED (hlavne pre oranzovu)
  *	- aktivna sekvencia vzdy oznacena slabsim svietenim 
  * - moznost zapnut hrania noty v notepickeri (napr. ak neexistuje aktualna sekvencia - toto som zakomentoval) alebo ked aktualna sekvencia neobsahuje zapnute noty
@@ -39,6 +42,8 @@
 #include "initconstants.h"
 
 extern HardwareSerial Serial;
+
+#define LED_ON 7 //3bits B111
 
 #define PAGE_COUNT 4 //4=1297+751, 5=1505+543, 6=1713+335
 #define STEP_COUNT 64
@@ -75,6 +80,8 @@ extern HardwareSerial Serial;
 #define METRONOME_HALF_LENGTH 24
 #define METRONOME_STEP_TIME_RATIO 100
 
+#define NOTEOFF_STEP_RATIO 40 // seqNoteOffStepMultiplier / NOTEOFF_STEP_RATIO = 1 step 
+
 volatile char activeSeqIndex = -1;
 char applyNotePickerToSeqIndex = -1;
 unsigned char metronomePosition = 0; //0..23, ratio = 200, length = 24
@@ -89,26 +96,23 @@ unsigned char playBufferCommand[PLAY_BUFFER_SIZE];
 char activePage = 0;
 
 unsigned char seqPosition[SEQ_COUNT];
-//char seqPrevPosition[SEQ_COUNT]; //todo toto lepsie zdokumentovat
 char seqLastUnprocessedStep[SEQ_COUNT];
 unsigned char seqPage[SEQ_COUNT];
 unsigned char seqStart[SEQ_COUNT];
 unsigned char seqEnd[SEQ_COUNT];
 unsigned char seqLength[SEQ_COUNT];
-unsigned char seqNote[SEQ_COUNT];
+unsigned char seqBaseNote[SEQ_COUNT];
 unsigned char seqChannel[SEQ_COUNT];
+char seqPlayingNote[SEQ_COUNT]; //-1=no note is playing
+char seqNoteOffStepMultiplier[SEQ_COUNT]; //0=note off sent immediately after note off 255/NOTEOFF_STEP_RATIO = duration of note in number of steps (seqNoteOffStepMultiplier / NOTEOFF_STEP_RATIO = 1 step)
+
 unsigned long lastStepTime[SEQ_COUNT];
 unsigned long seqStepRatio[SEQ_COUNT];
 
-//todo
-char seqNextNoteOffStepRatio[SEQ_COUNT]; //todo
-//todo
-//const long noteOffStepMultiplier = 40; // noteOffStepMultiplier/seqNoteOffStepRatio = 1 step 
-
-//todo: vypocet z BPM
+//todo: calculate microsPerStepRatio from BPM
 unsigned long microsPerStepRatio = 160; //microsPerStepRatio * seqStepRatio = one step
 unsigned long currentTime;
-//const unsigned long MAX_TIME = 4294967295; //+1 je overflow do nuly?
+//const unsigned long MAX_TIME = 4294967295; //+1 je overflow do nuly
 
 unsigned char steps[PAGE_COUNT][STEP_COUNT];
 
@@ -147,22 +151,24 @@ void setup() {
 	for (unsigned char si = 0; si < SEQ_COUNT; si++) {
 		seqPage[si] = 0;
 		seqStepRatio[si] = 600;
-		seqNextNoteOffStepRatio[si] = -1;
+		//seqNextNoteOffStepRatio[si] = -1;
+		seqNoteOffStepMultiplier[si] = NOTEOFF_STEP_RATIO/2; //default note duration = half of step
 		seqLastUnprocessedStep[si] = -1;
 		seqChannel[si] = 0;
 		seqStart[si] = 0;
 		seqEnd[si] = 0;
 		seqLength[si] = 0;
-		seqNote[si] = si + 40;
+		seqBaseNote[si] = si + 40;
+		seqPlayingNote[si] = -1;
 	}
 	//addSeq(0,7,0);
 
 }
 //------------------------------------------------------------------------------
 
-boolean isTimeToStep(long nextStepTime) {
-	//TODO: overflow handling
-	if (currentTime >= nextStepTime - 500) { //500 = latency compensation
+boolean isItTime(long timeWeAreWaitingFor) {
+	//TODO: timer overflow handling
+	if (currentTime >= timeWeAreWaitingFor - 500) { //500 = latency compensation
 		return true;
 	}
 	return false;
@@ -178,22 +184,22 @@ void loop() {
 
 }
 void processMetronome() {
-	if (isTimeToStep(metronomeLastStepTime + METRONOME_STEP_TIME_RATIO * microsPerStepRatio)) { //metronome
+	if (isItTime(metronomeLastStepTime + METRONOME_STEP_TIME_RATIO * microsPerStepRatio)) { //metronome
 		metronomeLastStepTime += METRONOME_STEP_TIME_RATIO * microsPerStepRatio;
 		if (0 == metronomePosition) {
 			lastMetronomeBeatTime = metronomeLastStepTime;
-			setLedGreen(PAD_MIXER, true);
-			setLedRed(PAD_MIXER, true);
+			setLedGreen(PAD_MIXER, LED_ON);
+			setLedRed(PAD_MIXER, LED_ON);
 			if (sendMidiBeatStart) {
 				midiBeatStart();
 				sendMidiBeatStart = false;
 			}
 		} else if (METRONOME_HALF_LENGTH == metronomePosition) {
-			setLedGreen(PAD_MIXER, true);
-			setLedRed(PAD_MIXER, false);
+			setLedGreen(PAD_MIXER, LED_ON);
+			setLedRed(PAD_MIXER, 0);
 		} else {
-			setLedGreen(PAD_MIXER, false);
-			setLedRed(PAD_MIXER, false);
+			setLedGreen(PAD_MIXER, 0);
+			setLedRed(PAD_MIXER, 0);
 		}
 		metronomePosition = (metronomePosition + 1) % METRONOME_LENGTH;
 		
@@ -203,7 +209,12 @@ void processMetronome() {
 
 void processSeqences() {
 	for (unsigned char si = 0; si < SEQ_COUNT; si++) { //prepare sequences for stepping
-		if (seqLength[si] > 0 && isTimeToStep(lastStepTime[si] + seqStepRatio[si] * microsPerStepRatio)) {
+		//note off needs to be processed before lastStepTime is incremented
+		if (seqPlayingNote[si] >= 0 && isItTime(lastStepTime[si] + (seqNoteOffStepMultiplier[si] / NOTEOFF_STEP_RATIO) * microsPerStepRatio)) {
+			midiNoteOff(seqPlayingNote[si], seqChannel[si]);
+			seqPlayingNote[si] = -1;
+		}
+		if (seqLength[si] > 0 && isItTime(lastStepTime[si] + seqStepRatio[si] * microsPerStepRatio)) {
 			lastStepTime[si] += seqStepRatio[si] * microsPerStepRatio;
 
 			//clear previous step LED
@@ -242,8 +253,8 @@ void processStep(char seqIndex) {
 	}
 	//seqPrevPosition[seqIndex] = -1;
 	if (steps[seqPage[seqIndex]][seqPosition[seqIndex]]) {
-		midiPlayNote(seqNote[seqIndex], seqChannel[seqIndex]);
-		//TODO: schedule note off
+		midiPlayNote(seqBaseNote[seqIndex], seqChannel[seqIndex]);
+		seqPlayingNote[seqIndex] = seqBaseNote[seqIndex];
 	}
 }
 
@@ -319,7 +330,7 @@ void addSeq(char seqStartIndex, char seqEndIndex, char seqType) {
 		seqStart[si] = seqStartIndex;
 		seqLength[si] = seqEnd[si] - seqStart[si] + 1;
 
-		seqNote[si] = notePickerCurrentNote;
+		seqBaseNote[si] = notePickerCurrentNote;
 		seqChannel[si] = notePickerCurrentChannel;
 
 		seqStepRatio[si] = 600;
@@ -373,12 +384,12 @@ void deleteSeq(char si) {
 
 void setStepRed(char stepIndex, boolean lightOn) {
 	if (stepIndex>=0 && stepIndex < STEP_COUNT) {
-		setLedRed((char) pgm_read_byte(&(stepToLed[stepIndex])), lightOn);
+		setLedRed((char) pgm_read_byte(&(stepToLed[stepIndex])), lightOn?LED_ON:0);
 	}
 }
 void setStepGreen(char stepIndex, boolean lightOn) {
 	if (stepIndex>=0 && stepIndex < STEP_COUNT) {
-		setLedGreen((char) pgm_read_byte(&(stepToLed[stepIndex])), lightOn);
+		setLedGreen((char) pgm_read_byte(&(stepToLed[stepIndex])), lightOn?LED_ON:0);
 	}
 }
 
@@ -388,7 +399,7 @@ void setNotePicker(unsigned char stepIndex) {
 		char newNote = 12 * (notePickerBottomOctave + 2) + toneOffset;
 		if (newNote < 128) {
 			if (applyNotePickerToSeqIndex >= 0) {
-				seqNote[applyNotePickerToSeqIndex] = newNote;
+				seqBaseNote[applyNotePickerToSeqIndex] = newNote;
 				seqChannel[applyNotePickerToSeqIndex] = notePickerCurrentChannel;
 			} /*else {
 				midiNoteOff(notePickerCurrentNote, notePickerCurrentChannel);
@@ -452,10 +463,10 @@ void redrawNotePicker() {
 
 		octaveStartStep -= 16;
 	}
-	setLedGreen(9, ((1 & notePickerCurrentChannel) > 0));
-	setLedGreen(10, ((2 & notePickerCurrentChannel) > 0));
-	setLedGreen(11, ((4 & notePickerCurrentChannel) > 0));
-	setLedGreen(12, ((8 & notePickerCurrentChannel) > 0));
+	setLedGreen(9, ((1 & notePickerCurrentChannel) > 0)?LED_ON:0);
+	setLedGreen(10, ((2 & notePickerCurrentChannel) > 0)?LED_ON:0);
+	setLedGreen(11, ((4 & notePickerCurrentChannel) > 0)?LED_ON:0);
+	setLedGreen(12, ((8 & notePickerCurrentChannel) > 0)?LED_ON:0);
 }
 
 void redrawSeqPlayer() {
@@ -517,22 +528,22 @@ void padOnHandler(unsigned char padIndex) {
 			applyNotePickerToSeqIndex = -1;
 			switchLedMode(LED_MODE_SEQ_RUN);
 			padMode = PAD_MODE_STEP_TOGGLE;
-			setLedGreen(PAD_SESSION, false);
-			setLedGreen(PAD_USER_1, false);
-			setLedRed(PAD_SESSION, false);
-			setLedRed(PAD_USER_1, false);
+			setLedGreen(PAD_SESSION, 0);
+			setLedGreen(PAD_USER_1, 0);
+			setLedRed(PAD_SESSION, 0);
+			setLedRed(PAD_USER_1, 0);
 
 		} else if (padIndex == PAD_USER_1) { //interactive note picker for running sequences
 			//midiNoteOff(notePickerCurrentNote, notePickerCurrentChannel);
 			if (activeSeqIndex >= 0 && seqLength[activeSeqIndex] > 0) {
-				seqNote[activeSeqIndex] = notePickerCurrentNote;
+				seqBaseNote[activeSeqIndex] = notePickerCurrentNote;
 				seqChannel[activeSeqIndex] = notePickerCurrentChannel;
 			}
 			applyNotePickerToSeqIndex = -1;
 			padMode = PAD_MODE_STEP_TOGGLE;
 			switchLedMode(LED_MODE_SEQ_RUN);
-			setLedGreen(PAD_SESSION, false);
-			setLedGreen(PAD_USER_1, false);
+			setLedGreen(PAD_SESSION, 0);
+			setLedGreen(PAD_USER_1, 0);
 		}
 
 	} else if (padMode == PAD_MODE_STEP_TOGGLE) {
@@ -560,7 +571,7 @@ void padOnHandler(unsigned char padIndex) {
 					}
 				} while (seqLength[activeSeqIndex] <= 0 && activeSeqIndex >= 0 && originalActiveSeqIndex != activeSeqIndex);
 			}
-			setLedGreen(padIndex, true);
+			setLedGreen(padIndex, LED_ON);
 			if (activeSeqIndex < 0 || activeSeqIndex >= SEQ_COUNT || seqLength[activeSeqIndex] <= 0) {
 				activeSeqIndex = originalActiveSeqIndex;
 			}
@@ -600,10 +611,11 @@ void padOnHandler(unsigned char padIndex) {
 			
 			if (!steps[activePage][stepPadIndex]) { //toggle steps
 				steps[activePage][stepPadIndex] = 1;
-				if (ledMode == LED_MODE_SEQ_RUN) setLedRed(padIndex, true);
+				if (ledMode == LED_MODE_SEQ_RUN) setLedRed(padIndex, LED_ON);
 			} else {
 				steps[activePage][stepPadIndex] = 0;
-				if (ledMode == LED_MODE_SEQ_RUN) setLedRed(padIndex, false);
+				if (ledMode == LED_MODE_SEQ_RUN) setLedRed(padIndex, 0); 
+				//if (ledMode == LED_MODE_SEQ_RUN) setLedRed(padIndex, 1); //test multiplexing blik-dimming
 			}
 			
 		} else if (padIndex == PAD_SESSION) { //seq adding, pick note while pad is pressed
@@ -611,20 +623,20 @@ void padOnHandler(unsigned char padIndex) {
 			applyNotePickerToSeqIndex = -1;
 			padMode = PAD_MODE_NOTE_PICKER;
 			switchLedMode(LED_MODE_NOTE_PICKER);
-			setLedRed(PAD_SESSION, true);
-			setLedGreen(PAD_SESSION, false);
+			setLedRed(PAD_SESSION, LED_ON);
+			setLedGreen(PAD_SESSION, 0);
 			addSeqHandlingSeqType = -1;
 			
 		} else if (padIndex == PAD_USER_1) { //pick note for existing active seq while playing
 			
 			if (activeSeqIndex >= 0 && seqLength[activeSeqIndex] > 0) {
-				notePickerCurrentNote = seqNote[activeSeqIndex];
+				notePickerCurrentNote = seqBaseNote[activeSeqIndex];
 				notePickerCurrentChannel = seqChannel[activeSeqIndex];
 				applyNotePickerToSeqIndex = activeSeqIndex;
 			}
 			switchLedMode(LED_MODE_NOTE_PICKER);
 			padMode = PAD_MODE_NOTE_PICKER;
-			setLedGreen(PAD_USER_1, true);
+			setLedGreen(PAD_USER_1, LED_ON);
 			
 		}
 
@@ -637,14 +649,14 @@ void padOnHandler(unsigned char padIndex) {
 				addSeqHandlingStepStart = -1;
 				applyNotePickerToSeqIndex = -1;
 				padMode = PAD_MODE_STEP_TOGGLE;
-				setLedGreen(PAD_SESSION, false);
-				setLedGreen(PAD_USER_1, false);
+				setLedGreen(PAD_SESSION, 0);
+				setLedGreen(PAD_USER_1, 0);
 			}
 		} else if (padIndex == PAD_SESSION) { //escape from seq adding
 			applyNotePickerToSeqIndex = -1;
 			padMode = PAD_MODE_STEP_TOGGLE;
-			setLedGreen(PAD_SESSION, false);
-			setLedGreen(PAD_USER_1, false);
+			setLedGreen(PAD_SESSION, 0);
+			setLedGreen(PAD_USER_1, 0);
 		} else if (padIndex >= 0 && padIndex <= 7) { //row arrows - select time ratio for new seq
 			addSeqHandlingSeqType = padIndex;
 		}
@@ -660,9 +672,9 @@ void padOffHandler(unsigned char padIndex) {
 			applyNotePickerToSeqIndex = -1;
 			padMode = PAD_MODE_ADD_SEQ;
 			switchLedMode(LED_MODE_SEQ_RUN);
-			setLedRed(PAD_SESSION, false);
-			setLedGreen(PAD_SESSION, true);
-			setLedGreen(PAD_USER_1, false);
+			setLedRed(PAD_SESSION, 0);
+			setLedGreen(PAD_SESSION, LED_ON);
+			setLedGreen(PAD_USER_1, 0);
 
 		} else if (stepPadIndex >= 0 && notePickerCurrentNote >= 0) {
 			//midiNoteOff(notePickerCurrentNote, notePickerCurrentChannel);
@@ -671,8 +683,8 @@ void padOffHandler(unsigned char padIndex) {
 	} else if (padMode == PAD_MODE_STEP_TOGGLE) {
 
 		if (padIndex == PAD_UP || padIndex == PAD_DOWN) {
-			setLedGreen(PAD_UP, false);
-			setLedGreen(PAD_DOWN, false);
+			setLedGreen(PAD_UP, 0);
+			setLedGreen(PAD_DOWN, 0);
 			redrawSeqPlayer();
 		}
 	} else if (padMode == PAD_MODE_ADD_SEQ) {
