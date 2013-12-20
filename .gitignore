@@ -1,6 +1,10 @@
 /nbproject/
 Makefile
 Makefile.old
+.gitignore
+/.git/
+
+
 
 # Compiled Object files
 *.slo
