@@ -2,15 +2,15 @@
 #define PAD_RED_SHIFT 5
 #define PAD_GREEN_BIT_VALUE 28 //3bits B00011100 (shift 2)  (was 64)
 #define PAD_GREEN_SHIFT 2
+#define PAD_LED_BIT_VALUE 252 //B11111100
 
 #define PAD_VALUE 3 //2bits B11 no shifting //63
-#define PAD_THRESHOLD 10
 
-unsigned char pads[80];
-unsigned char lastBank = 3;
-unsigned char nextBank = 0;
+uint8_t pads[80];
+uint8_t lastBank = 3;
+uint8_t nextBank = 0;
 unsigned long lastBankScanTime = 0;
-unsigned char multiplexCycle = 0;
+uint8_t multiplexCycle = 0;
 
 //unsigned long scanBankCount = 0;
 //unsigned long firstScanBankTime = 0;
@@ -30,7 +30,7 @@ void nlpCoreInit() {
 
 	initLeds();
 
-	for (unsigned char padi = 0; padi < 80; padi++) {
+	for (uint8_t padi = 0; padi < 80; padi++) {
 		pads[padi] = 0;
 	}
 }
@@ -53,28 +53,27 @@ void nlpCoreScanBank() {
 		resetBank();
 		delayMicroseconds(18);
 		nextBank = (lastBank + 1) % 4;
-		if (0==nextBank) { multiplexCycle+=multiplexCycle%8; }
-		for (unsigned char biti = 0; biti < 40; biti++) {
-			unsigned char ledBitValue = 0;
-			char ledBitIndex = (char) pgm_read_byte(&(bankBitsGreenLed[nextBank][biti]));
+		if (0==nextBank) { multiplexCycle++; } //=multiplexCycle%8; } //s tymto modulom to nefungovalo
+		for (uint8_t biti = 0; biti < 40; biti++) {
+			uint8_t ledBitValue = 0;
+			int8_t ledBitIndex = (int8_t) pgm_read_byte(&(bankBitsGreenLed[nextBank][biti]));
 			if (ledBitIndex >= 0) {
 				ledBitValue = getLedGreen(ledBitIndex);
 			} else {
-				ledBitIndex = (char) pgm_read_byte(&(bankBitsRedLed[nextBank][biti]));
+				ledBitIndex = (int8_t) pgm_read_byte(&(bankBitsRedLed[nextBank][biti]));
 				if (ledBitIndex >= 0) {
 					ledBitValue = getLedRed(ledBitIndex);
 				}
 			}
-			//if (ledBitValue > 0 && (multiplexCycle & (biti/5) == (biti/5))) { //test multiplexting blik
-			if ((ledBitValue == LED_ON) || (multiplexCycle & ledBitValue)==ledBitValue) { //111=LED_ON=full 11=slabo 1=silno
+			if ((ledBitValue == LED_ON) || (ledBitValue!=0 && (multiplexCycle & ledBitValue)==ledBitValue)) { //111=LED_ON=full 11=slabo 1=silno
 				setLedBit(true);
 			} else {
 				setLedBit(false);
 			}
 			if (biti < 24) {
-				char padIndex = (char) pgm_read_byte(&(bankPadBits[lastBank][biti]));
+				int8_t padIndex = (int8_t) pgm_read_byte(&(bankPadBits[lastBank][biti]));
 				if (padIndex >= 0) {
-					unsigned char newPadState = (0 != (PIND & 4));
+					uint8_t newPadState = (0 != (PIND & 4));
 					if (newPadState && !getPad(padIndex)) {
 						setPad(padIndex);
 						padOnHandler(padIndex);
@@ -93,29 +92,29 @@ void nlpCoreScanBank() {
 	}
 }
 
-void resetPad(unsigned char padIndex) {
+void resetPad(uint8_t padIndex) {
 	pads[padIndex] &= ~PAD_VALUE;
 }
 
-void setPad(unsigned char padIndex) {
+void setPad(uint8_t padIndex) {
 	pads[padIndex] |= PAD_VALUE;
 }
 
-void setPadValue(unsigned char padIndex, unsigned char newPadValue) {
+void setPadValue(uint8_t padIndex, uint8_t newPadValue) {
 	resetPad(padIndex);
 	pads[padIndex] |= newPadValue;
 }
 
-boolean getPad(unsigned char padIndex) {
+boolean getPad(uint8_t padIndex) {
 	return (pads[padIndex] & PAD_VALUE) != 0; //no shifting
 }
 
 
-boolean getLedRed(unsigned char ledIndex) {
+boolean getLedRed(uint8_t ledIndex) {
 	return (pads[ledIndex] & PAD_RED_BIT_VALUE)>>PAD_RED_SHIFT;
 }
 
-void setLedRed(unsigned char ledIndex, unsigned char newLedBitValue) {
+void setLedRed(uint8_t ledIndex, uint8_t newLedBitValue) {
 	if (newLedBitValue > 0) {
 		pads[ledIndex] &= ~PAD_RED_BIT_VALUE;
 		pads[ledIndex] |= (PAD_RED_BIT_VALUE & (newLedBitValue << PAD_RED_SHIFT));
@@ -124,11 +123,11 @@ void setLedRed(unsigned char ledIndex, unsigned char newLedBitValue) {
 	}
 }
 
-boolean getLedGreen(unsigned char ledIndex) {
+boolean getLedGreen(uint8_t ledIndex) {
 	return (pads[ledIndex] & PAD_GREEN_BIT_VALUE)>>PAD_GREEN_SHIFT;
 }
 
-void setLedGreen(unsigned char ledIndex, unsigned char newLedBitValue) {
+void setLedGreen(uint8_t ledIndex, uint8_t newLedBitValue) {
 	if (newLedBitValue > 0) {
 		pads[ledIndex] &= ~PAD_GREEN_BIT_VALUE;
 		pads[ledIndex] |= (PAD_GREEN_BIT_VALUE & (newLedBitValue << PAD_GREEN_SHIFT));
@@ -136,6 +135,16 @@ void setLedGreen(unsigned char ledIndex, unsigned char newLedBitValue) {
 		pads[ledIndex] &= ~PAD_GREEN_BIT_VALUE;
 	}
 }
+
+void setLed(uint8_t ledIndex, uint8_t newLedBitValue) {
+	if (newLedBitValue > 0) {
+		pads[ledIndex] &= ~PAD_LED_BIT_VALUE;
+		pads[ledIndex] |= (PAD_LED_BIT_VALUE & newLedBitValue);
+	} else {
+		pads[ledIndex] &= ~PAD_LED_BIT_VALUE;
+	}
+}
+
 
 void initLeds() {
 	resetDataLoad();
@@ -189,6 +198,6 @@ void resetBank() {
 	PORTD &= ~(240); //reset banks
 }
 
-void setBank(unsigned char bankIndex) {
+void setBank(uint8_t bankIndex) {
 	PORTD |= (banks[bankIndex]); //set bank high
 }

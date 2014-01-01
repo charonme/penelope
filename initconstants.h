@@ -1,5 +1,5 @@
-const unsigned char banks[] = {16, 32, 64, 128};
-char bankPadBits[4][24] PROGMEM = {
+const uint8_t banks[] = {16, 32, 64, 128};
+int8_t bankPadBits[4][24] PROGMEM = {
 	//       0  1  2  3  4  5  6  7
 	//       8  9 10 11 12 13 14 15
 	//      16 17 18 19 20 21 22 23
@@ -38,7 +38,7 @@ pad indexes
 79 70 61 52 43 34 25 16 07
  */
 
-char stepToToneOffset[] PROGMEM = {
+int8_t stepToToneOffset[] PROGMEM = {
 	/*
 			 0   1   2   3   4   5   6   7
 			 8   9  10  11  12  13  14  15
@@ -60,7 +60,7 @@ char stepToToneOffset[] PROGMEM = {
 };
 
 
-unsigned char stepToLed[] PROGMEM = {
+uint8_t stepToLed[] PROGMEM = {
 	/*
 			 0   1   2   3   4   5   6   7
 			 8   9  10  11  12  13  14  15
@@ -80,7 +80,7 @@ unsigned char stepToLed[] PROGMEM = {
 	78, 69, 60, 51, 42, 33, 24, 15,
 	79, 70, 61, 52, 43, 34, 25, 16
 };
-char padToStep[] PROGMEM = {
+int8_t padToStep[] PROGMEM = {
 	/*
 			 0  1  2  3  4  5  6  7
 			 8  9 10 11 12 13 14 15 16
@@ -103,9 +103,19 @@ char padToStep[] PROGMEM = {
 	-1, 0, 8, 16, 24, 32, 40, 48, 56
 };
 
+int8_t stepToScaleBit[] PROGMEM = {
+	-1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1,
+	-1,  1,  3, -1,  6,  8, 10, -1,
+	 0,  2,  4,  5,  7,  9, 11, -1,
+	-1,  1,  3, -1,  6,  8, 10, -1,
+	 0,  2,  4,  5,  7,  9, 11, -1,
+	-1,  1,  3, -1,  6,  8, 10, -1,
+	 0,  2,  4,  5,  7,  9, 11, -1
+};
 
 
-char bankBitsGreenLed[4][40] PROGMEM = {
+int8_t bankBitsGreenLed[4][40] PROGMEM = {
 	{
 		8, 0, 44, 4, -1, -1, -1, -1,
 		76, 67, 58, 49, -1, -1, -1, -1,
@@ -135,7 +145,7 @@ char bankBitsGreenLed[4][40] PROGMEM = {
 		39, 30, 21, 12, -1, -1, -1, -1
 	}
 };
-char bankBitsRedLed[4][40] PROGMEM = {
+int8_t bankBitsRedLed[4][40] PROGMEM = {
 	{
 		-1, -1, -1, -1, 4, 44, 0, 8,
 		-1, -1, -1, -1, 76, 67, 58, 49,
