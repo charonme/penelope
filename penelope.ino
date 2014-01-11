@@ -1,35 +1,32 @@
 #define DEBUG_MODE 0
 /* TODO:
- * - bugs:
- *		- indikacia prave hrajucej pozicie v user2 mode
- *		- treba poslat note off ked sa zmaze sekvencia (alebo asi aj v inych pripadoch ked sa nieco radikalne zmeni)
+ * - send note off when a seq is deleted
  * 
+ * - right arrows in seq run view:
+ *		- select, create, mute, unmute, pause, stop, resume/start
  * 
- * - ovladanie (stop/run) vsetkych sekvencii na jednej stranke (momentalne mame 8 stranok, kazda max.8 sekv.)
+ * - control view of all sequences 8 pages on 8 rows, max 8 seq per page = 8 cols
+ *		- pads have the same functionality as right arrows in seq run view
  * 
- * - indikacia na ktorej som stranke
- * - indikacia vycerpaneho poctu sekvencii pri vytvarani novej nad limit
+ * - current page indicator
+ * - visual indikacation when the attempting to create too many sequences
  * 
- * - viacero moznosti pri prepinani medzi modami, hlavne mam na mysli scale picker
- * - vymysliet lepsie scrollovanie v scale runneri (napr. mozno s animaciou alebo scrollbarom)
- *		- prave sipky zatial nemaju vyuzitie v scale runneri, mozno by sa dali pouzit na vyskovy scrollbar aj s rychlym prepinanim
- *		- spodny riadok na scrollbar a runner, 7 riadkov na vyber noty. 7riadkov x 8scrollovacich sipok = iba 56 scale hodnot pre noty, ale nevadi
- *			- to dava priestor pre 2 bity na nieco dalsie
+ * - more ways (pad combinations) to switch to the scale picker
+ * - values in scale runner: 5 bits for note/scale value, 2 bits for velocity, 1 bit for note tie
+ * - better scale runner scrolling
+ *		- right arrows for vertical scrolling
+ *		- bottom row for horizontal scrolling + runner indicator
  * 
- * - BPM nastavovanie
- *		- tapovanim
- *		- plus a minus alebo ciselna volba
- * - start a stop vsetkych sekvencii (aj metronomu) pre MIDI casovanie/synchronizaciu
- *		- v slave mode start/stop signaly z externeho midi zdroja
- *		- zapnut metronom az ked pride externy povel start?
- *			- a ked pride stop, treba aj sekvencie vsetky resetnut na zaciatok alebo staci ked sa pauznu tym ze neide metronom?
- *		- alebo: ak nic nehra, pridavat sekvencie zastavene a cakat na externy povel start?
- * - cez MIDI vstup:
- *		- vyber noty pre sekvenciu (learn)
- *		- nastavovanie offsetov v note-offsetovej sekvencii
- *		- nacasovane zadavanie not (live rec) do nahravanej sekvencie
+ * - manual BPM setting
+ *		- pad tapping
+ *		- increment/decrement or numeric input
+ * - start and stop for all seqs depending on MIDI sync msgs
+ * - MIDI input:
+ *		- scale setup
+ *		- seq base noty select
+ *		- live note recording (quantized to steps)
  * 
- * - zoznam (alebo priam "dokumentacia" features co uz je urobene a ako sa to ovlada
+ * - features documentation
  */
 
 /*
@@ -152,7 +149,7 @@ volatile uint8_t playBufferCommand[PLAY_BUFFER_SIZE];
 
 int8_t activePage = 0;
 #define SLOT_SEQS_NO_SEQ -1
-int8_t slotSeqs[PAGE_COUNT][8]; //TODO: ale nedovolit viac ako SEQ_COUNT sekvencii aj s upozornenim
+int8_t slotSeqs[PAGE_COUNT][8]; //TODO: don't allow more than SEQ_COUNT seqs
 
 uint8_t seqPosition[SEQ_COUNT];
 int8_t seqLastUnprocessedStep[SEQ_COUNT];
@@ -183,7 +180,7 @@ uint16_t hbpm = 16000; //16000 hbpm = 160bpm; 65535 hbpm = 655.35 bpm
 #define HBPM_STEP_MEASURE_RATIO 750000000
 unsigned long microsPerMetronomeStep;
 unsigned long currentTime;
-//const unsigned long MAX_TIME = 4294967295; //+1 je overflow do nuly
+//const unsigned long MAX_TIME = 4294967295; //+1 overflows to 0
 /*
 #define MAX_TAP_QUEUE 3
 #define LATEST_FIRST_TAP 6000000
@@ -195,7 +192,7 @@ uint8_t tapCount = 0;
 #define BASE_STEP 0
 int8_t steps[PAGE_COUNT][STEP_COUNT]; //-1 = empty step (no note), 0 = seq base note, 1..127 = offset values for note calculation according to seq's scales and base notes
 
-int8_t notePickerBottomOctave = -1; //-2..6 (najvyssia oktava je 8, vykresluju sa 3 od spodnej)
+int8_t notePickerBottomOctave = -1; //-2..6 (max octave = 8, 3 are displayed)
 uint8_t notePickerCurrentNote = 40; //0..127
 uint8_t notePickerCurrentChannel = 0;
 int8_t notePickerCurrentMeasure = 6;
@@ -281,7 +278,7 @@ void setup() {
 	}
 	nlpCoreInit();
 	
-	analogWrite(14,255); //test
+	analogWrite(14,255); //enable MIDI out
 	analogWrite(15,255); //test
 	analogWrite(16,255); //test
 	
@@ -594,7 +591,7 @@ int8_t getSeqNote(int8_t seqIndex) {
 		}
 	}
 	uint8_t stepValue = steps[seqPage[seqIndex]][seqPosition[seqIndex]];
-	//TODO: z tohto by sa dalo vypocitat ktoru notu zasvietit v scale editore
+	//TODO: light up note in scale editor?
 	return seqBaseNote[seqIndex] + scaleValues[stepValue % scaleSize] + ((int)(stepValue/scaleSize))*12*scaleOctaves;
 	/* */
 	return 0;
@@ -831,7 +828,7 @@ void highlightActiveSeq() {
 
 void redrawNotePicker() {
 	clearStepLeds();
-	if (notePickerBottomOctave<-2 || notePickerBottomOctave > 6) notePickerBottomOctave = -1; //pre istotu
+	if (notePickerBottomOctave<-2 || notePickerBottomOctave > 6) notePickerBottomOctave = -1; 
 	uint8_t octaveStartStep = 56;
 	int8_t currentNoteOctave = notePickerCurrentNote / 12 - 2; //-2 .. 8
 	uint8_t currentNoteTone = notePickerCurrentNote % 12; //0..11
