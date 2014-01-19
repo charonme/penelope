@@ -38,15 +38,6 @@ void nlpCoreInit() {
 void nlpCoreScanBank() {
 	if (currentTime > lastBankScanTime + 380) {
 		lastBankScanTime = currentTime;
-		/* * /
-		if (firstScanBankTime==0 && scanBankCount==0) firstScanBankTime = currentTime;
-		if (currentTime - firstScanBankTime >= 10000000) {
-			Serial.println(firstScanBankTime); //34660
-			Serial.println(currentTime - firstScanBankTime); //10000344
-			Serial.println(scanBankCount); //16944
-		}
-		scanBankCount++;
-		/* */
 
 		resetDataLoad();
 		setClock();
