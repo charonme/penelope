@@ -12,9 +12,24 @@
  * - send note off when a seq is deleted
  * - recalculate seqStepValueToOff when changing base note - see setSeqBaseNoteAndChannel()
  * - note off when seq is paused/stopped/muted
+ * - use seqPlayingNote for offing notes easily
+ * 
+ * - allow seq config to specify how many bits from the step data byte are to be used and interpreted in what way
+ *		- for example a few bits for note height and a few for velocity value
+ * 
+ * - press and hold user 1: select active seq for editing using right arrows (including not assigned slots yet)
+ *		- release user 1: enter into editing mode for selected active seq
+ *			- after exiting edit mode for an unassigned slot wait for user to pick start/end points
+ * - generalized state: when an unassigned slot is selected as "the active seq" (perhaps the seq is already created, but is in defining/not playing state)
+ *  pressing and releasing a single pad toggles a step, but pressing and releasing a pad while another one
+ *  is pressed will define the start/end points and run/start the seq.
+ * - pressing the right arrow slot pad for an active sequence currently stops that sequence.
+ *		If there is no seq defined for that slot, create it the same way as described in the process above
+ *		and proceed directly to start/end points definition
  * 
  * - right arrows in seq run view:
  *		- select, create, mute, unmute, pause, stop, resume/start
+ *			- different functions accessed maybe with a combination of up, down, left, right buttons?
  * 
  * - control view of all sequences 8 pages on 8 rows, max 8 seq per page = 8 cols
  *		- pads have the same functionality as right arrows in seq run view
@@ -23,12 +38,11 @@
  * - visual indication when attempting to create too many sequences
  * 
  * - possibility to send configured MIDI Control Change values instead of note-ons
- * - direct new seq creation by pressing start pad + end pad 
- *		- when holding down the start pad longer, light up the next seq slot (right arrows)
- * 
  * 
  * - more ways (pad combinations) to switch to the scale picker
- * - scale runner: bottom row for horizontal scrolling + runner indicator
+ *		- pressing both user1+user2 in any order should activate seq scale configurator
+ *		- unlatching user1 in seq scale configurator should activate seq scale runner mode
+ * - scale runner: bottom row (horizontal scrollbar) could be used for runner indicator too
  * 
  * - manual BPM setting
  *		- pad tapping
@@ -128,6 +142,8 @@ extern HardwareSerial Serial;
 #define PAD_MODE_EDIT_SEQ 4 //edit seq start and end points
 #define PAD_MODE_SCALE_PICKER 5 //selecting multiple notes (in one octave) inside regular note picker
 #define PAD_MODE_SCALE_RUN 6 //toggling notes for one sequence configured with scale picker
+#define PAD_MODE_SELECT_SEQ 7 //while user1 is pressed down select a slot using right arrows
+#define PAD_MODE_SETTING_STEPS 8 //first pad pressed while defining start/end for a seq SEQ_STATE_DEFINED_WITHOUT_STEPS
 
 #define MIDI_WAITING_FOR_SYSEX -1
 
@@ -176,7 +192,7 @@ uint8_t seqScaleHi[SEQ_COUNT]; //8 more bits for two-octave scales
 #define SEQ_PAGE_MASK 248 //B11111000
 #define SEQ_PAGE_SHIFT 3
 #define SEQ_SLOT_MASK 7   //B00000111
-uint8_t seqPageSlot[SEQ_COUNT];
+uint8_t seqPageSlot[SEQ_COUNT]; //5 MSBits for page number, 3 LSBits for slot number
 //uint8_t seqPage[SEQ_COUNT]; //0..PAGE_COUNT-1
 //int8_t seqSlot[SEQ_COUNT]; //-1=none, 0..7 (row indicated by right arrows) should be unique for every page
 
@@ -191,11 +207,15 @@ uint8_t seqChannel[SEQ_COUNT];	//0..15  (4 bits) //29 total = 4 bytes and 3 bits
 #define SEQ_STATE_ARMED 2 //true = waiting for metronome beat clock 0 to start playing
 #define SEQ_STATE_PLAYING 4 //false = paused/stopped (not playing)
 #define SEQ_STATE_HIGHLIGHTED 128
+#define SEQ_STATE_DEFINED_WITHOUT_STEPS 8
 uint8_t seqState[SEQ_COUNT];
 
 //playing note waiting to be NOTE-OFF-ed
 #define NO_NOTE_TO_OFF 0
 int8_t seqStepValueToOff[SEQ_COUNT];
+
+#define NO_PLAYING_NOTE -1
+int8_t seqPlayingNote[SEQ_COUNT];
 
 int8_t seqMeasure[SEQ_COUNT]; //number of beat clocks per step
 int8_t seqBeatClocksSinceLastStep[SEQ_COUNT]; //always lower than seqMeasure
@@ -247,8 +267,9 @@ uint8_t scalePlayerOffset = 0; //bottom note/scale offset value (displaying 8 va
 #define SCALE_STEP_VALUE 63 //B00111111
 #define SCALE_STEP_EMPTY 192 //B11000000
 
-const boolean sharpTone[13] = {0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0};
-const int8_t tonePickerOffset[13] = {0, -7, 1, -6, 2, 3, -4, 4, -3, 5, -2, 6, 7};
+const boolean sharpTone[13] = {1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0};
+const int8_t tonePickerOffset[13] = {0, -8, 1, -7, 2, 3, -5, 4, -4, 5, -3, 6, 7};
+//const int8_t tonePickerOffset[13] = {0, -7, 1, -6, 2, 3, -4, 4, -3, 5, -2, 6, 7};
 
 uint8_t ledMode = LED_MODE_SEQ_RUN;
 uint8_t padMode = PAD_MODE_STEP_TOGGLE;
@@ -257,6 +278,10 @@ boolean sendMidi = !DEBUG_MODE;
 boolean midiBeatMaster = true; //false = slave, receive beat clock, don't send our own
 int8_t midiWaitingForIncoming = 0; //MIDI_WAITING_FOR_SYSEX = -1
 int8_t midiPassThruFilterOut = 0;
+
+#define OTHER_STEP_NONE -2 //no other pad (nor step) was pressed
+#define OTHER_STEP_WRONG -1 //wrong other pad (not a step) or more than 2 pads were pressed
+
 
 // **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **
 //   **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **  **
@@ -308,6 +333,7 @@ void initSeq(int8_t si) {
 	seqEnd[si] = 0;
 	seqBaseNote[si] = si + 40;
 	seqStepValueToOff[si] = NO_NOTE_TO_OFF;
+	seqPlayingNote[si] = NO_PLAYING_NOTE;
 	seqScaleLo[si] = DEFAULT_SCALE_LO;
 	seqScaleHi[si] = DEFAULT_SCALE_HI;
 	seqPageSlot[si] = ((si/8)<<SEQ_PAGE_SHIFT) | (si%8);
@@ -587,6 +613,7 @@ void checkNoteOff(int8_t seqIndex, uint8_t checkOffType) { //STEPS_OFF_ONE or ST
 		int8_t oldSeqNote = getSeqNote(seqIndex, seqStepValueToOff[seqIndex]);
 		midiNoteOff(oldSeqNote, seqChannel[seqIndex]);
 		seqStepValueToOff[seqIndex] = NO_NOTE_TO_OFF;
+		seqPlayingNote[seqIndex] = NO_PLAYING_NOTE;
 	}
 }
 
@@ -602,27 +629,10 @@ void queuedProcessSeq() {
 			//note off
 			if (seqStepValueToOff[si] != NO_NOTE_TO_OFF) {
 				checkNoteOff(si, STEPS_OFF_ONE);
-				/*
-				if (
-					EMPTY_STEP != (seqStepValueToOff[si] & STEPS_NOTE_MASK) &&
-					(seqStepValueToOff[si] & STEPS_OFF_MASK) == STEPS_OFF_ONE
-				) {
-					int8_t oldSeqNote = getSeqNote(seqIndex, seqStepValueToOff[si]);
-					midiNoteOff(oldSeqNote, seqChannel[si]);
-					seqStepValueToOff[si] = NO_NOTE_TO_OFF;
-				}*/
 			}
 
 			//clear previous step LED
-			if (
-				ledMode == LED_MODE_SEQ_RUN && 
-				((seqPageSlot[si] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT) == activePage && 
-				seqPosition[si]>=0 && seqPosition[si] < STEP_COUNT
-			) { 
-				setSeqStep(si,seqPosition[si],false);
-			} else if (si == activeSeqIndex && ledMode == LED_MODE_SCALE_RUN) {
-				drawScaleStep(seqPosition[si],false);
-			}
+			redrawPreviousStep(si);
 
 
 			seqPosition[si]++;
@@ -639,7 +649,7 @@ void queuedProcessSeq() {
 	queuedProcessSeqIndex++;
 }
 
-int8_t getSeqNote(int8_t seqIndex, int8_t stepValue) {
+int8_t getSeqNote(int8_t seqIndex, int8_t stepValue) { //used in checkNoteOff and processStep
 	/* */
 	uint8_t scaleSize = 0;
 	uint8_t scaleValues[MAX_SCALE_SIZE];
@@ -662,27 +672,22 @@ int8_t getSeqNote(int8_t seqIndex, int8_t stepValue) {
 }
 
 void processStep(int8_t seqIndex) {
-	if (ledMode == LED_MODE_SEQ_RUN) {
-		
-		setSeqStep(seqIndex,seqPosition[seqIndex],true);
-		
-	} else if (seqIndex == activeSeqIndex && ledMode == LED_MODE_SCALE_RUN) {
-		
-		drawScaleStep(seqPosition[seqIndex],true);
-		
-	}
+	int8_t newSeqNote = -1;
 	if (EMPTY_STEP != (steps[((seqPageSlot[seqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)][seqPosition[seqIndex]] & STEPS_NOTE_MASK)) {
 		
 		if (seqStepValueToOff[seqIndex] != NO_NOTE_TO_OFF) checkNoteOff(seqIndex, STEPS_OFF_NEXT);
 		
-		int8_t newSeqNote = getSeqNote(seqIndex, steps[((seqPageSlot[seqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)][seqPosition[seqIndex]]);
+		newSeqNote = getSeqNote(seqIndex, steps[((seqPageSlot[seqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)][seqPosition[seqIndex]]);
 		midiPlayNote(newSeqNote, seqChannel[seqIndex]);
 		
 		if (seqStepValueToOff[seqIndex] != NO_NOTE_TO_OFF) checkNoteOff(seqIndex, STEPS_OFF_TIE);
 		
 		seqStepValueToOff[seqIndex] = steps[((seqPageSlot[seqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)][seqPosition[seqIndex]];
+		seqPlayingNote[seqIndex] = newSeqNote;
 	}
+	drawCurrentStep(seqIndex,newSeqNote); //originally was before non-empty step processing
 }
+
 
 void midiProcessBufferedOutput() {
 	uint8_t bufferOffset = 0;
@@ -756,18 +761,18 @@ void midiNoteOff(int8_t midiNote, uint8_t midiChannel) {
 
 void addSeq(int8_t seqStartIndex, int8_t seqEndIndex, int8_t measure, int8_t slotIndex) {
 	int8_t si = 0;
-	while (si < SEQ_COUNT && seqState[si] != SEQ_STATE_OFF) si++;
+	while (si < SEQ_COUNT && seqState[si] != SEQ_STATE_OFF) si++; //allocate new sequence index
 	
-	if (slotIndex < 0) {
-		slotIndex = 0;
-		while (slotIndex < 8 && slotSeqs[activePage][slotIndex] >= 0) slotIndex++;
-	}
+	for (int8_t slotOffset=0; slotOffset<8 && slotSeqs[activePage][slotIndex] >= 0; slotOffset++) 
+		slotIndex = (slotIndex+1)%8;
 	
 	if (
 		si < SEQ_COUNT && seqState[si] == SEQ_STATE_OFF &&
-		slotIndex < 8 &&
-		slotSeqs[activePage][slotIndex] == SLOT_SEQS_NO_SEQ
+		slotIndex < 8 && slotIndex >= 0 &&
+		slotSeqs[activePage][slotIndex] == SLOT_SEQS_NO_SEQ //if slot is not free, do nothing
 	) {
+		if (activeSeqIndex >= 0) setSeqState(activeSeqIndex, SEQ_STATE_HIGHLIGHTED, false); //unhighlight previously selected seq
+		
 		//seqPage[si] = activePage;
 		seqEnd[si] = seqEndIndex;
 		seqStart[si] = seqStartIndex;
@@ -785,9 +790,21 @@ void addSeq(int8_t seqStartIndex, int8_t seqEndIndex, int8_t measure, int8_t slo
 		} else {
 			seqMeasure[si] = measure;
 		}
-		setSeqState(si, SEQ_STATE_SET, true);
-		setSeqState(si, SEQ_STATE_ARMED, true);
-		setSeqState(si, SEQ_STATE_PLAYING, false);
+		
+		if (seqStartIndex == 0 && seqEndIndex == 0) {
+			
+			seqState[si] = SEQ_STATE_DEFINED_WITHOUT_STEPS;
+			//TODO: setup seq almost like stopped/paused ?
+			
+		} else {
+			
+			setSeqState(si, SEQ_STATE_SET, true);
+			setSeqState(si, SEQ_STATE_ARMED, true);
+			setSeqState(si, SEQ_STATE_PLAYING, false);
+		}
+		
+		//TODO: do this other stuff also for defined_without_steps ???
+		
 		seqBeatClocksSinceLastStep[si] = seqMeasure[si];
 
 		seqPosition[si] = seqEnd[si];
@@ -805,7 +822,7 @@ void addSeq(int8_t seqStartIndex, int8_t seqEndIndex, int8_t measure, int8_t slo
 void deleteSeq(int8_t si) {
 	seqEnd[si] = 0;
 	seqStart[si] = 0;
-	seqState[si] = SEQ_STATE_OFF;
+	seqState[si] = SEQ_STATE_OFF; //this will also unhighlight the seq
 	seqBeatClocksSinceLastStep[si] = 0;
 	
 	slotSeqs[(seqPageSlot[si] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT][seqPageSlot[si] & SEQ_SLOT_MASK] = SLOT_SEQS_NO_SEQ;
@@ -831,7 +848,7 @@ void deleteSeq(int8_t si) {
 			
 			
 		} else if (activePage != ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)) {
-			activePage = ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT); 
+			activePage = ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT);
 			redrawSeqPlayer();
 		}
 	}
@@ -856,7 +873,7 @@ void setStepLed(int8_t stepIndex, int8_t ledValue) {
 void setSeqBaseNoteAndChannel(int8_t seqIndex, int8_t newNote, int8_t newChannel) { //TODO: correct int type
 	//TODO: recalc seqStepValueToOff when changing base note
 	seqBaseNote[seqIndex] = newNote;
-	//TODO: turn off playing note if changing channel
+	//TODO: turn off playing note before changing channel
 	seqChannel[seqIndex] = newChannel;
 }
 
@@ -905,18 +922,68 @@ void highlightActiveSeq() {
 }
 
 
+void redrawPreviousStep(int8_t seqIndex) { //turn off drawn previously played step
+	if (
+		ledMode == LED_MODE_SEQ_RUN && 
+		((seqPageSlot[seqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT) == activePage && 
+		seqPosition[seqIndex]>=0 && seqPosition[seqIndex] < STEP_COUNT
+	) { 
+		setSeqStep(seqIndex,seqPosition[seqIndex],false);
+	} else if (ledMode == LED_MODE_SCALE_PICKER && seqIndex == activeSeqIndex) {
+		
+		//TODO
+		redrawNotePicker();
+		
+	} else if (ledMode == LED_MODE_SCALE_RUN && seqIndex == activeSeqIndex) {
+		drawScaleStep(seqPosition[seqIndex],false);
+	}
+}
+void drawCurrentStep(int8_t seqIndex, int8_t seqNote) {
+	if (ledMode == LED_MODE_SEQ_RUN) { //and if (((seqPageSlot[seqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT) == activePage)
+		
+		setSeqStep(seqIndex,seqPosition[seqIndex],true);
+		
+	} else if (ledMode == LED_MODE_SCALE_PICKER && seqIndex == activeSeqIndex && seqNote>=seqBaseNote[seqIndex]) {
+		
+		setStepLed(56 + tonePickerOffset[(seqNote-seqBaseNote[seqIndex]) % 12], LED_GREEN);
+		//setStepLed(56 + seqNote-seqBaseNote[seqIndex], LED_GREEN);
+		//setStepLed(56 + tonePickerOffset[0], LED_GREEN);
+		
+	} else if (ledMode == LED_MODE_SCALE_RUN && seqIndex == activeSeqIndex) {
+		
+		drawScaleStep(seqPosition[seqIndex],true);
+		redrawScalePlayerScrollbar(seqPosition[seqIndex]-seqStart[seqIndex]);
+		
+	}
+}
+
+//TODO: better gui
+int8_t getMeasureFromStepPadIndex(int8_t stepPadIndex) {
+	return stepPadIndex+1;
+}
+void redrawMeasurePicker(int8_t drawMeasure) {
+	for (uint8_t measureIndicator = 0; measureIndicator < 16; measureIndicator++) {
+		if (measureIndicator < drawMeasure) {
+			setStepLed(measureIndicator, LED_ORANGE);
+		} else {
+			setStepLed(measureIndicator, LED_YELLOW);
+		}
+	}
+}
+//------------------------
+
 void redrawNotePicker() {
 	clearStepLeds();
 	if (notePickerBottomOctave<-2 || notePickerBottomOctave > 6) notePickerBottomOctave = -1; 
 	uint8_t octaveStartStep = 56;
 	int8_t currentNoteOctave = notePickerCurrentNote / 12 - 2; //-2 .. 8
 	uint8_t currentNoteTone = notePickerCurrentNote % 12; //0..11
-	for (uint8_t octaveDrawingIndex = 0; octaveDrawingIndex < 3; octaveDrawingIndex++) {
-		setStepRed(octaveStartStep - 7, LED_ON);
-		setStepRed(octaveStartStep - 6, LED_ON);
-		setStepRed(octaveStartStep - 4, LED_ON);
-		setStepRed(octaveStartStep - 3, LED_ON);
-		setStepRed(octaveStartStep - 2, LED_ON);
+	for (uint8_t octaveDrawingIndex = 0; octaveDrawingIndex < 4; octaveDrawingIndex++) {
+		setStepRed(octaveStartStep - 8, LED_ON); //C#
+		setStepRed(octaveStartStep - 7, LED_ON); //D#
+		setStepRed(octaveStartStep - 5, LED_ON); //F#
+		setStepRed(octaveStartStep - 4, LED_ON); //G#
+		setStepRed(octaveStartStep - 3, LED_ON); //A#
 		
 		if (activeSeqIndex < 0 || padMode != PAD_MODE_SCALE_PICKER) {
 		
@@ -936,50 +1003,37 @@ void redrawNotePicker() {
 
 			//currently selected note
 			if (currentNoteOctave == notePickerBottomOctave + octaveDrawingIndex) { 
-				//if (sharpTone[currentNoteTone]) {
-					setStepLed(octaveStartStep + tonePickerOffset[currentNoteTone], LED_ORANGE);
-					//setStepGreen(octaveStartStep + tonePickerOffset[currentNoteTone], LED_DIM);
-					//setStepRed(octaveStartStep + tonePickerOffset[currentNoteTone], LED_ON);
-				//} else {
-					//setStepGreen(octaveStartStep + tonePickerOffset[currentNoteTone], LED_DIM);
-					//setStepRed(octaveStartStep + tonePickerOffset[currentNoteTone], LED_ON);
-				//}
+				setStepLed(octaveStartStep + tonePickerOffset[currentNoteTone], LED_ORANGE);
 			}
 		}
 
 		octaveStartStep -= 16;
 	}
 	
-	//scale picker
-	if (activeSeqIndex >=0 && padMode == PAD_MODE_SCALE_PICKER) {
-		
-		for (uint8_t i=0; i<MAX_SCALE_SIZE; i++) {
-			
-			if (i<16) {
-				if (0 != (seqScaleLo[activeSeqIndex] & (1 << i))) 
-					setStepLed((uint8_t) pgm_read_byte(&(scaleBitToStep[i])), LED_ORANGE);
-			} else {
-				if (0 != (seqScaleHi[activeSeqIndex] & (1 << (i-16)))) 
-					setStepLed((uint8_t) pgm_read_byte(&(scaleBitToStep[i])), LED_ORANGE);
+	//"scale picker" mode
+	if (padMode == PAD_MODE_SCALE_PICKER) {
+		if (activeSeqIndex >=0) {
+			for (uint8_t i=0; i<MAX_SCALE_SIZE; i++) {
+
+				if (i<16) {
+					if (0 != (seqScaleLo[activeSeqIndex] & (1 << i))) 
+						setStepLed((uint8_t) pgm_read_byte(&(scaleBitToStep[i])), LED_ORANGE);
+				} else {
+					if (0 != (seqScaleHi[activeSeqIndex] & (1 << (i-16)))) 
+						setStepLed((uint8_t) pgm_read_byte(&(scaleBitToStep[i])), LED_ORANGE);
+				}
+
 			}
-			
 		}
-		
+		//measure picker (moved from "note picker" into the "scale picker" mode)
+		redrawMeasurePicker(notePickerCurrentMeasure);
 	}
 	
-	//measure picker
-	for (uint8_t measureIndicator = 0; measureIndicator < 16; measureIndicator++) {
-		if (measureIndicator < notePickerCurrentMeasure) {
-			setStepLed(measureIndicator, LED_ORANGE);
-		} else {
-			setStepLed(measureIndicator, LED_YELLOW);
-		}
-	}
 	//channel picker
-	setLed(13, ((1 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
-	setLed(14, ((2 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
-	setLed(15, ((4 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
-	setLed(16, ((8 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
+	setLed(16, ((1 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
+	setLed(15, ((2 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
+	setLed(14, ((4 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
+	setLed(13, ((8 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
 }
 
 //void lightScaleOffsetStep(uint8_t seqIndex, uint8_t) {
@@ -1040,10 +1094,26 @@ void drawScaleStep(int8_t seqStepIndex, boolean isCurrentlyPlaying) {
 	}
 
 }
-void redrawScalePlayerScrollbar() {
-	for (uint8_t i=56; i<64; i++) {
-		setStepLed(i,LED_RED);
+void redrawScalePlayerScrollbar(int8_t seqPosOffset) {
+	for (uint8_t i=0; i<=(seqEnd[activeSeqIndex]-seqStart[activeSeqIndex])/8; i++) {
+		if (i == scalePlayerPosition/8) { //current window position
+			//processing step in current window
+			if (seqPosOffset >= 0 && (seqPosOffset/8) >= i && (seqPosOffset/8) < i+1) { 
+				setStepLed(i+56,LED_ORANGE);
+			} else {
+				setStepLed(i+56,LED_RED);
+			}
+		} else {
+			//processing step in some other position
+			if (seqPosOffset >= 0 && (seqPosOffset/8) >= i && (seqPosOffset/8) < i+1) { 
+				setStepLed(i+56,LED_AMBER);
+			} else {
+				setStepLed(i+56,LED_GREEN);
+			}
+		}
 	}
+		
+	
 }
 void redrawScalePlayer() {
 	clearStepLeds();
@@ -1085,7 +1155,7 @@ void redrawScalePlayer() {
 				}
 			}
 		}
-		redrawScalePlayerScrollbar();
+		redrawScalePlayerScrollbar(-1);
 		for (uint8_t i=0; i<3; i++) setLed(i,0);
 		for (uint8_t i=3; i<8; i++) setLed(i,LED_GREEN);
 		setLed(7-(scalePlayerOffset/7),LED_RED); //scrollbar position
@@ -1149,6 +1219,9 @@ void switchLedMode(uint8_t newLedMode) {
 	} else if (newLedMode == LED_MODE_NOTE_PICKER && ledMode != newLedMode) {
 		redrawNotePicker();
 		ledMode = LED_MODE_NOTE_PICKER;
+	} else if (newLedMode == LED_MODE_SCALE_PICKER) {
+		ledMode = LED_MODE_SCALE_PICKER;
+		redrawNotePicker();
 	} else if (newLedMode == LED_MODE_SCALE_RUN) {
 		redrawScalePlayer();
 		ledMode = LED_MODE_SCALE_RUN;
@@ -1158,13 +1231,53 @@ void switchLedMode(uint8_t newLedMode) {
 int8_t addSeqHandlingStepStart = -1;
 //---------------------------------------------------------------------------------------------------------------
 
+void setActiveSeqStartEnd(int8_t startStepIndex,int8_t endStepIndex) {
+						
+	seqStart[activeSeqIndex] = startStepIndex;
+	seqEnd[activeSeqIndex] = endStepIndex;
+	seqState[activeSeqIndex] = 0; //setSeqState(activeSeqIndex, SEQ_STATE_DEFINED_WITHOUT_STEPS, false);
+	setSeqState(activeSeqIndex, SEQ_STATE_SET, true);
+	setSeqState(activeSeqIndex, SEQ_STATE_ARMED, true);
+	setSeqState(activeSeqIndex, SEQ_STATE_PLAYING, false);
+	seqBeatClocksSinceLastStep[activeSeqIndex] = seqMeasure[activeSeqIndex];
+	seqPosition[activeSeqIndex] = seqEnd[activeSeqIndex];
+	if (midiBeatMaster && midiBeatState == MIDI_BEAT_STOPPED) {
+		boolean isFirstSeq = true;
+		for (uint8_t i=0; i<SEQ_COUNT; i++) 
+			if (activeSeqIndex != i && seqState[activeSeqIndex] != SEQ_STATE_OFF)	
+				isFirstSeq = false;
+		if (isFirstSeq) midiBeatState = MIDI_BEAT_ARMED;
+	}
+}
+
+						
+int8_t getOtherPressedStep(int8_t padIndex, int8_t ignorePadIndex) {
+	int8_t otherPressedStep = OTHER_STEP_NONE;
+					
+	for (int8_t i = 0; i<80; i++) {
+		if (getPad(i) && i != padIndex && (ignorePadIndex<0 || ignorePadIndex!=i)) {
+			if (otherPressedStep == OTHER_STEP_NONE) {
+				otherPressedStep = (int8_t)pgm_read_byte(&(padToStep[i]));
+				if (otherPressedStep == OTHER_STEP_WRONG) break;
+			} else {
+				otherPressedStep = OTHER_STEP_WRONG;
+				break;
+			}
+		}
+	}
+	return otherPressedStep;
+}
+
+
+//---------------------------------------------------------------------------------------------------------------
+
 void padOnHandler(uint8_t padIndex) {
 	
 	int8_t stepPadIndex = (int8_t) pgm_read_byte(&(padToStep[padIndex]));
 	
 	if (padMode == PAD_MODE_NOTE_PICKER) {
 		
-		if (padIndex == PAD_UP && notePickerBottomOctave < 6) { //note picker octave switching
+		if (padIndex == PAD_UP && notePickerBottomOctave < 5) { //note picker octave switching
 			notePickerBottomOctave++;
 			redrawNotePicker();
 		} else if (padIndex == PAD_DOWN && notePickerBottomOctave > -2) { //midi octaves go from -2 (c-2=0) to 8 (g+8=127)
@@ -1172,30 +1285,21 @@ void padOnHandler(uint8_t padIndex) {
 			redrawNotePicker();
 
 		} else if (padIndex >= 13 && padIndex <= 16) { //select channel
-			if (padIndex == 13) notePickerCurrentChannel = notePickerCurrentChannel ^ 1;
-			if (padIndex == 14) notePickerCurrentChannel = notePickerCurrentChannel ^ 2;
-			if (padIndex == 15) notePickerCurrentChannel = notePickerCurrentChannel ^ 4;
-			if (padIndex == 16) notePickerCurrentChannel = notePickerCurrentChannel ^ 8;
+			
+			//TODO: note off before switching channel
+			if (padIndex == 16) notePickerCurrentChannel = notePickerCurrentChannel ^ 1;
+			if (padIndex == 15) notePickerCurrentChannel = notePickerCurrentChannel ^ 2;
+			if (padIndex == 14) notePickerCurrentChannel = notePickerCurrentChannel ^ 4;
+			if (padIndex == 13) notePickerCurrentChannel = notePickerCurrentChannel ^ 8;
 			setNotePickerChannel(notePickerCurrentChannel);
 
-		} else if (stepPadIndex >= 0 && stepPadIndex < 16) { //measure selector
-			
-			notePickerCurrentMeasure = stepPadIndex+1;
-			
-			if (applyNotePickerToSeqIndex >= 0) { //apply measure change
-				//TODO: when changing measure, reset and/or rearm timing?
-				seqMeasure[applyNotePickerToSeqIndex] = notePickerCurrentMeasure;
-			}
-			
-			redrawNotePicker();
-			
-		} else if (stepPadIndex >= 16 && stepPadIndex < STEP_COUNT) {
+		} else if (stepPadIndex >= 0 && stepPadIndex < STEP_COUNT) {
 
 			setNotePicker(stepPadIndex);
 
 		} else if (padIndex == PAD_MIXER && getPad(PAD_SESSION) && activeSeqIndex >= 0 && seqState[activeSeqIndex] != SEQ_STATE_OFF) { 
 			//delete seq
-			
+			//TODO: note off before deleting
 			deleteSeq(activeSeqIndex);
 			applyNotePickerToSeqIndex = -1;
 			switchLedMode(LED_MODE_SEQ_RUN);
@@ -1219,8 +1323,8 @@ void padOnHandler(uint8_t padIndex) {
 		} else if (padIndex == PAD_USER_2) { //enable scale picker
 			
 			padMode = PAD_MODE_SCALE_PICKER;
+			switchLedMode(LED_MODE_SCALE_PICKER);//calls redrawNotePicker();
 			setLed(PAD_USER_2, LED_ORANGE);
-			redrawNotePicker();
 			
 		}
 		
@@ -1229,7 +1333,18 @@ void padOnHandler(uint8_t padIndex) {
 		if (padIndex == PAD_USER_2) { //pressed again, disable scale picker
 			
 			padMode = PAD_MODE_NOTE_PICKER;
+			switchLedMode(LED_MODE_NOTE_PICKER);
 			setLed(PAD_USER_2, 0);
+			
+		} else if (stepPadIndex >= 0 && stepPadIndex < 16) { //measure selector
+			
+			notePickerCurrentMeasure = getMeasureFromStepPadIndex(stepPadIndex);
+			
+			if (applyNotePickerToSeqIndex >= 0) { //apply measure change
+				//TODO: when changing measure, reset and/or rearm timing
+				seqMeasure[applyNotePickerToSeqIndex] = notePickerCurrentMeasure;
+			}
+			
 			redrawNotePicker();
 			
 		} else {
@@ -1247,6 +1362,37 @@ void padOnHandler(uint8_t padIndex) {
 			
 		}
 
+		
+	} else if (padMode == PAD_MODE_SETTING_STEPS) { //one step pad pressed, waiting for second step pad
+		
+		if (stepPadIndex >= 0 && stepPadIndex < STEP_COUNT) { //step pads
+			
+			int8_t otherPressedStep = OTHER_STEP_NONE;
+			
+			if (
+				activeSeqIndex >= 0 && 
+				activePage == ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT) &&
+				getSeqState(activeSeqIndex,SEQ_STATE_DEFINED_WITHOUT_STEPS)
+			) {
+
+				otherPressedStep = getOtherPressedStep(padIndex,-1);
+				
+				//ignore otherPressedPad == OTHER_STEP_WRONG, do nothing
+				if (otherPressedStep == OTHER_STEP_NONE) { //no other pad pressed: this should not happen
+					padMode = PAD_MODE_STEP_TOGGLE;
+					
+				} else if (otherPressedStep >= 0) { //second pad pressed (end point)
+					
+					if (otherPressedStep < stepPadIndex) {
+						
+						setActiveSeqStartEnd(otherPressedStep,stepPadIndex);
+
+						padMode = PAD_MODE_STEP_TOGGLE;
+					}
+				}
+			}
+		}		
+		
 
 	} else if (padMode == PAD_MODE_STEP_TOGGLE) {
 
@@ -1282,11 +1428,13 @@ void padOnHandler(uint8_t padIndex) {
 				if (activePage != ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)) {
 					activePage = ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT);
 				}
+				
+				if (originalActiveSeqIndex >= 0) setSeqState(originalActiveSeqIndex, SEQ_STATE_HIGHLIGHTED, false);				
+				
+				highlightActiveSeq(); //TODO: test this order, the highlighting was originally after redraw
 				redrawSeqPlayer();
 				
-				highlightActiveSeq();
 			}
-			//Serial.println(activeSeqIndex);
 			
 		} else if (padIndex == PAD_LEFT) { //active page switching
 			
@@ -1307,19 +1455,78 @@ void padOnHandler(uint8_t padIndex) {
 			redrawSeqPlayer();
 			
 
-		} else if (stepPadIndex >= 0 && stepPadIndex < STEP_COUNT) {
+		} else if (stepPadIndex >= 0 && stepPadIndex < STEP_COUNT) { //step pads
 			
-			if (EMPTY_STEP == (steps[activePage][stepPadIndex] & STEPS_NOTE_MASK)) { //toggle steps
-				steps[activePage][stepPadIndex] &= ~STEPS_NOTE_MASK;
-				steps[activePage][stepPadIndex] |= BASE_STEP | STEPS_OFF_ONE;
-				if (ledMode == LED_MODE_SEQ_RUN) setLedRed(padIndex, LED_ON);
-			} else {
-				steps[activePage][stepPadIndex] &= ~STEPS_NOTE_MASK;
-				//steps[activePage][stepPadIndex] |= EMPTY_STEP; //not needed if EMPTY_STEP = 0
-				if (ledMode == LED_MODE_SEQ_RUN) {
-					setLedRed(padIndex, 0); 
+			int8_t otherPressedStep = OTHER_STEP_NONE;
+			
+			if ( //redefine start/end points while holding the top left "UP" pad
+				getPad(PAD_UP) && 
+				activePage == ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT) &&
+				activeSeqIndex >= 0
+			) {
+				otherPressedStep = getOtherPressedStep(padIndex,PAD_UP);
+				
+				if (otherPressedStep >= 0 && otherPressedStep < stepPadIndex) {
+						
+					setActiveSeqStartEnd(otherPressedStep,stepPadIndex);
+					highlightActiveSeq();
+					redrawSeqPlayer();
+				}
+
+			} else if ( //add new seq with defining start/end points while holding the "DOWN" pad
+				getPad(PAD_DOWN) && 
+				activePage == ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)
+			) {
+				otherPressedStep = getOtherPressedStep(padIndex,PAD_DOWN);
+				
+				if (otherPressedStep >= 0 && otherPressedStep < stepPadIndex) {
+					
+					addSeq(otherPressedStep, stepPadIndex, notePickerCurrentMeasure, otherPressedStep/8);
+					redrawSeqPlayer();
+					
 				}
 				
+				
+			} else {
+
+				if ( //active sequence is defined without steps, attempt to define start step
+					activeSeqIndex >= 0 && 
+					activePage == ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT) &&
+					getSeqState(activeSeqIndex,SEQ_STATE_DEFINED_WITHOUT_STEPS) 
+				) {
+					otherPressedStep = getOtherPressedStep(padIndex,-1);
+
+					//TODO: we want to prevent step toggling when we define start/end points
+
+					if (otherPressedStep == OTHER_STEP_NONE) { //first pad pressed (start point)
+
+						padMode = PAD_MODE_SETTING_STEPS; //TODO: turn off PAD_MODE_SETTING_STEPS in padOffHandler
+
+					} else if (otherPressedStep >= 0) { //two pad pressed: this should not happen, second pad (end point) should be handled in PAD_MODE_SETTING_STEPS handler
+
+						padMode = PAD_MODE_STEP_TOGGLE;
+					} else { //more than one pad pressed or incorrect pads pressed
+
+						padMode = PAD_MODE_STEP_TOGGLE;
+					}
+
+
+				}
+
+				if (otherPressedStep == OTHER_STEP_NONE && padMode != PAD_MODE_SETTING_STEPS) {
+					//toggle step
+					if (EMPTY_STEP == (steps[activePage][stepPadIndex] & STEPS_NOTE_MASK)) { //toggle steps
+						steps[activePage][stepPadIndex] &= ~STEPS_NOTE_MASK;
+						steps[activePage][stepPadIndex] |= BASE_STEP | STEPS_OFF_ONE;
+						if (ledMode == LED_MODE_SEQ_RUN) setLedRed(padIndex, LED_ON);
+					} else {
+						steps[activePage][stepPadIndex] &= ~STEPS_NOTE_MASK;
+						//steps[activePage][stepPadIndex] |= EMPTY_STEP; //not needed if EMPTY_STEP = 0
+						if (ledMode == LED_MODE_SEQ_RUN) {
+							setLedRed(padIndex, 0); 
+						}
+					}
+				}
 			}
 			
 		} else if (padIndex >= 0 && padIndex <= 7) { //right arrows
@@ -1329,7 +1536,7 @@ void padOnHandler(uint8_t padIndex) {
 				slotSeqs[activePage][padIndex] == SLOT_SEQS_NO_SEQ || //specific new seq init
 				(slotSeqs[activePage][padIndex] >= 0 && seqState[slotSeqs[activePage][padIndex]] == SEQ_STATE_OFF) //this should never happen
 			) {
-				
+				//in this case (for right arrows) slotIndex = padIndex
 				addSeq(padIndex*8, padIndex*8+7, notePickerCurrentMeasure, padIndex);
 				redrawSeqPlayer();
 				
@@ -1376,17 +1583,15 @@ void padOnHandler(uint8_t padIndex) {
 			setLedGreen(PAD_SESSION, 0);
 			
 		} else if (padIndex == PAD_USER_1) { //pick note for existing active seq while playing
+
+			padMode = PAD_MODE_SELECT_SEQ;
+			setLed(PAD_USER_1, LED_AMBER);
 			
-			if (activeSeqIndex >= 0 && seqState[activeSeqIndex] != SEQ_STATE_OFF) {
-				notePickerCurrentNote = seqBaseNote[activeSeqIndex];
-				notePickerCurrentChannel = seqChannel[activeSeqIndex];
-				notePickerCurrentMeasure = seqMeasure[activeSeqIndex];
-				applyNotePickerToSeqIndex = activeSeqIndex;
+			if (activeSeqIndex >= 0 && activePage == ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT)) {
+				highlightActiveSeq();
+				redrawSeqPlayer();
 			}
-			switchLedMode(LED_MODE_NOTE_PICKER);
-			padMode = PAD_MODE_NOTE_PICKER;
-			setLedGreen(PAD_USER_1, LED_ON);
-			
+
 		} else if (padIndex == PAD_MIXER) {
 			/* * /
 			if (
@@ -1425,6 +1630,31 @@ void padOnHandler(uint8_t padIndex) {
 			
 		}
 
+	} else if (padMode == PAD_MODE_SELECT_SEQ) {
+		
+		if (padIndex >= 0 && padIndex <= 7) { //right arrows
+			
+			if (
+				slotSeqs[activePage][padIndex] == SLOT_SEQS_NO_SEQ || //no seq defined for this slot yet
+				(slotSeqs[activePage][padIndex] >= 0 && seqState[slotSeqs[activePage][padIndex]] == SEQ_STATE_OFF) //this should never happen
+			) {
+				if (activeSeqIndex >= 0) setSeqState(activeSeqIndex, SEQ_STATE_HIGHLIGHTED, false);
+				addSeq(0,0, notePickerCurrentMeasure, padIndex); //0,0 = define seq without start and end steps, seq will wait for start/end steps to be specified
+				redrawSeqPlayer();
+				
+			} else if (
+				slotSeqs[activePage][padIndex] >= 0 &&
+				seqState[slotSeqs[activePage][padIndex]] != SEQ_STATE_OFF
+			) {
+				if (activeSeqIndex >= 0) setSeqState(activeSeqIndex, SEQ_STATE_HIGHLIGHTED, false);
+				activeSeqIndex = slotSeqs[activePage][padIndex];
+				highlightActiveSeq();
+				redrawSeqPlayer();
+			}
+		
+		}
+		
+		
 	} else if (padMode == PAD_MODE_ADD_SEQ || padMode == PAD_MODE_EDIT_SEQ) {
 		
 		if (stepPadIndex >= 0) {
@@ -1448,7 +1678,7 @@ void padOnHandler(uint8_t padIndex) {
 					redrawSeqPlayer(); //redraw new seq highlight positions
 					
 				} else { //seq adding, select seq end and create
-					addSeq(addSeqHandlingStepStart, stepPadIndex, notePickerCurrentMeasure, -1); //-1 = autoassign slot
+					addSeq(addSeqHandlingStepStart, stepPadIndex, notePickerCurrentMeasure, addSeqHandlingStepStart/8);
 				
 					addSeqHandlingStepStart = -1;
 					applyNotePickerToSeqIndex = -1;
@@ -1480,10 +1710,8 @@ void padOnHandler(uint8_t padIndex) {
 	} else if (padMode == PAD_MODE_SCALE_RUN) {
 		
 		if (stepPadIndex >= 56 && stepPadIndex < 64) { //horizontal scrollbar
-			
-			redrawScalePlayerScrollbar();
-			setStepLed(stepPadIndex,LED_ORANGE);//debug test
-			
+			scalePlayerPosition = (stepPadIndex-56)*8;
+			redrawScalePlayer();
 			
 		} else if (stepPadIndex >= 0 && stepPadIndex < 56) { //toggle notes
 			//TODO: depending on vertical scroll position (scalePlayerOffset) set other parameters (bits in steps array)
@@ -1571,7 +1799,24 @@ void padOffHandler(uint8_t padIndex) {
 	int8_t stepPadIndex = (int8_t) pgm_read_byte(&(padToStep[padIndex]));
 	//if (padIndex == PAD_MIXER) {}
 	
-	if (padMode == PAD_MODE_NOTE_PICKER) {
+	if (padMode == PAD_MODE_SELECT_SEQ) {
+
+		if (padIndex == PAD_USER_1) {
+			if (activeSeqIndex >= 0 && seqState[activeSeqIndex] != SEQ_STATE_OFF) {
+
+				setSeqState(activeSeqIndex, SEQ_STATE_HIGHLIGHTED, false);
+
+				notePickerCurrentNote = seqBaseNote[activeSeqIndex];
+				notePickerCurrentChannel = seqChannel[activeSeqIndex];
+				notePickerCurrentMeasure = seqMeasure[activeSeqIndex];
+				applyNotePickerToSeqIndex = activeSeqIndex;
+			}
+			padMode = PAD_MODE_NOTE_PICKER;
+			switchLedMode(LED_MODE_NOTE_PICKER);
+			setLed(PAD_USER_1, LED_GREEN);
+		}
+		
+	} else if (padMode == PAD_MODE_NOTE_PICKER) {
 		if (padIndex == PAD_SESSION) { //note picking off, seq adding or editing on
 			
 			if (activeSeqIndex >= 0 && seqState[activeSeqIndex] != SEQ_STATE_OFF) { //seq editing
@@ -1647,6 +1892,12 @@ void padOffHandler(uint8_t padIndex) {
 			} else {
 				setLed(PAD_DOWN,LED_GREEN);
 			}
+		}
+		
+	} else if (padMode == PAD_MODE_SETTING_STEPS) { //exit from start/end steps setting mode
+
+		if (stepPadIndex >= 0 && stepPadIndex < STEP_COUNT) { //step pads		
+			padMode = PAD_MODE_STEP_TOGGLE;
 		}
 		
 	}
