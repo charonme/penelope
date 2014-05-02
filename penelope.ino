@@ -9,6 +9,7 @@
 
 
 /* TODO:
+ * - !!!! implement midi running status !!!!
  * - send note off when a seq is deleted
  * - recalculate seqStepValueToOff when changing base note - see setSeqBaseNoteAndChannel()
  * - note off when seq is paused/stopped/muted
@@ -249,17 +250,22 @@ uint8_t tapCount = 0;
 int8_t steps[PAGE_COUNT][STEP_COUNT];
 #define DEFAULT_STEP STEPS_ACC | STEPS_OFF_ONE
 
-int8_t notePickerBottomOctave = -1; //-2..6 (max octave = 8, 3 are displayed)
+//int8_t notePickerBottomOctave = -1; //-2..5 (max octave = 8, 4 are displayed)
 uint8_t notePickerCurrentNote = 40; //0..127
-uint8_t notePickerCurrentChannel = 0;
+//uint8_t notePickerCurrentChannel = 0;
 int8_t notePickerCurrentMeasure = 6;
+#define NOTE_PICKER_STATE_MASK_CHANNEL 15 //B00001111
+#define NOTE_PICKER_STATE_MASK_BOTTOM 112 //B01110000 //bottom octave: max octave = 8, 4 are displayed, 0=-2, 8=5
+#define NOTE_PICKER_STATE_SHIFT_BOTTOM 4
+#define NOTE_PICKER_STATE_MASK_PREVIEW 128 //B10000000
+#define NOTE_PICKER_STATE_SHIFT_PREVIEW 7
+uint8_t notePickerState = 1 << NOTE_PICKER_STATE_SHIFT_BOTTOM;
+#define NOTE_PICKER_PREVIEW_PAD 9
 
 #define MAX_SCALE_PLAYER_POSITION 120
 uint8_t scalePlayerPosition = 0; //leftmost time position (displaying 8 steps in columns from position to pos.+7)
 #define MAX_SCALE_PLAYER_OFFSET 28
 uint8_t scalePlayerOffset = 0; //bottom note/scale offset value (displaying 8 values in rows from offset to off.+7)
-
-
 
 #define SCALE_STEP_FLAG 192 //B11000000
 #define SCALE_STEP_ABOVE 128 //B10000000
@@ -783,7 +789,7 @@ void addSeq(int8_t seqStartIndex, int8_t seqEndIndex, int8_t measure, int8_t slo
 		setLed(slotIndex,ARROW_SEQ_ARMED); //seq in slot armed
 		
 		seqBaseNote[si] = notePickerCurrentNote;
-		seqChannel[si] = notePickerCurrentChannel;
+		seqChannel[si] = (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL);
 
 		if (measure <= 0) {
 			seqMeasure[si] = 6;
@@ -880,18 +886,18 @@ void setSeqBaseNoteAndChannel(int8_t seqIndex, int8_t newNote, int8_t newChannel
 void setNotePicker(uint8_t stepIndex) {
 	int8_t toneOffset = (int8_t) pgm_read_byte(&(stepToToneOffset[stepIndex]));
 	if (toneOffset >= 0) {
-		int8_t newNote = 12 * (notePickerBottomOctave + 2) + toneOffset;
+		int8_t newNote = 12 * ((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM) + toneOffset;
 		if (newNote < 128) {
 			if (applyNotePickerToSeqIndex >= 0) {
 				
-				setSeqBaseNoteAndChannel(applyNotePickerToSeqIndex, newNote, notePickerCurrentChannel);
+				setSeqBaseNoteAndChannel(applyNotePickerToSeqIndex, newNote, (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL));
 				
 				//TODO: when changing measure, reset and/or rearm timing?
 				seqMeasure[applyNotePickerToSeqIndex] = notePickerCurrentMeasure;
 				
 			} else if (activeSeqIndex < 0 || seqState[activeSeqIndex] == SEQ_STATE_OFF) {
-				midiNoteOff(notePickerCurrentNote, notePickerCurrentChannel);
-				midiPlayNote(newNote, notePickerCurrentChannel);
+				midiNoteOff(notePickerCurrentNote, (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL));
+				midiPlayNote(newNote, (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL));
 			}
 			if (notePickerCurrentNote != newNote) {
 				notePickerCurrentNote = newNote;
@@ -958,60 +964,100 @@ void drawCurrentStep(int8_t seqIndex, int8_t seqNote) {
 }
 
 //TODO: better gui
-int8_t getMeasureFromStepPadIndex(int8_t stepPadIndex) {
-	return stepPadIndex+1;
+int8_t setMeasureFromStepPadIndex(int8_t stepPadIndex) {
+	//notePickerCurrentMeasure = stepPadIndex+1;
+	/* */
+	uint8_t measureModulo = 8;
+	while (measureModulo>1 && (notePickerCurrentMeasure < measureModulo || (notePickerCurrentMeasure % measureModulo)!=0)) {
+		measureModulo--;
+	}
+	if (stepPadIndex>=8 && stepPadIndex<=15) {
+		notePickerCurrentMeasure = notePickerCurrentMeasure/measureModulo*(stepPadIndex-7);
+	} else if (stepPadIndex>=0 && stepPadIndex<=7) {
+		notePickerCurrentMeasure = measureModulo*(stepPadIndex+1);
+	}
+	/* */
 }
-void redrawMeasurePicker(int8_t drawMeasure) {
+void redrawMeasurePicker() {
+	/* * /
 	for (uint8_t measureIndicator = 0; measureIndicator < 16; measureIndicator++) {
-		if (measureIndicator < drawMeasure) {
+		if (measureIndicator < notePickerCurrentMeasure) {
 			setStepLed(measureIndicator, LED_ORANGE);
 		} else {
 			setStepLed(measureIndicator, LED_YELLOW);
 		}
 	}
+	/* */
+	uint8_t measureModulo = 8;
+	while (measureModulo>1 && (notePickerCurrentMeasure < measureModulo || (notePickerCurrentMeasure % measureModulo)!=0)) {
+		measureModulo--;
+		setStepLed(measureModulo+7,0);
+	}
+	for (uint8_t measureIndicator = 1; measureIndicator <= measureModulo; measureIndicator++)
+		setStepLed(measureIndicator+7,LED_YELLOW);
+	for (uint8_t measureIndicator = 1; measureIndicator <= notePickerCurrentMeasure/measureModulo; measureIndicator++)
+		setStepLed(measureIndicator-1,LED_ORANGE);
+	for (uint8_t measureIndicator = 1+notePickerCurrentMeasure/measureModulo; measureIndicator<=8; measureIndicator++)
+		setStepLed(measureIndicator-1,0);
+	/* */
 }
 //------------------------
 
 void redrawNotePicker() {
 	clearStepLeds();
-	if (notePickerBottomOctave<-2 || notePickerBottomOctave > 6) notePickerBottomOctave = -1; 
 	uint8_t octaveStartStep = 56;
 	int8_t currentNoteOctave = notePickerCurrentNote / 12 - 2; //-2 .. 8
 	uint8_t currentNoteTone = notePickerCurrentNote % 12; //0..11
-	for (uint8_t octaveDrawingIndex = 0; octaveDrawingIndex < 4; octaveDrawingIndex++) {
-		setStepRed(octaveStartStep - 8, LED_ON); //C#
-		setStepRed(octaveStartStep - 7, LED_ON); //D#
-		setStepRed(octaveStartStep - 5, LED_ON); //F#
-		setStepRed(octaveStartStep - 4, LED_ON); //G#
-		setStepRed(octaveStartStep - 3, LED_ON); //A#
-		
-		if (activeSeqIndex < 0 || padMode != PAD_MODE_SCALE_PICKER) {
-		
-			if (notePickerBottomOctave + octaveDrawingIndex > 0) {
-				for (uint8_t octaveMarker = 0; octaveMarker < notePickerBottomOctave + octaveDrawingIndex; octaveMarker++) {
-					setStepGreen(octaveStartStep + octaveMarker, LED_ON);
+	if (padMode == PAD_MODE_NOTE_PICKER) {
+		for (uint8_t octaveDrawingIndex = 0; octaveDrawingIndex < 4; octaveDrawingIndex++) {
+			setStepRed(octaveStartStep - 8, LED_ON); //C#
+			setStepRed(octaveStartStep - 7, LED_ON); //D#
+			setStepRed(octaveStartStep - 5, LED_ON); //F#
+			setStepRed(octaveStartStep - 4, LED_ON); //G#
+			setStepRed(octaveStartStep - 3, LED_ON); //A#
+
+			if (activeSeqIndex < 0 || padMode != PAD_MODE_SCALE_PICKER) {
+
+				if (((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM)-2 + octaveDrawingIndex > 0) {
+					for (
+						uint8_t octaveMarker = 0; 
+						octaveMarker < ((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM)-2 + octaveDrawingIndex;
+						octaveMarker++
+					) {
+						setStepGreen(octaveStartStep + octaveMarker, LED_ON);
+					}
+				} else if (((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM)-2 + octaveDrawingIndex == -1) { //negative octaves
+					setStepGreen(octaveStartStep, LED_ON);
+					setStepRed(octaveStartStep, LED_ON);
+				} else if (((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM)-2 + octaveDrawingIndex == -2) {
+					setStepGreen(octaveStartStep, LED_ON);
+					setStepRed(octaveStartStep, LED_ON);
+					setStepGreen(octaveStartStep + 1, LED_ON);
+					setStepRed(octaveStartStep + 1, LED_ON);
 				}
-			} else if (notePickerBottomOctave + octaveDrawingIndex == -1) { //negative octaves
-				setStepGreen(octaveStartStep, LED_ON);
-				setStepRed(octaveStartStep, LED_ON);
-			} else if (notePickerBottomOctave + octaveDrawingIndex == -2) {
-				setStepGreen(octaveStartStep, LED_ON);
-				setStepRed(octaveStartStep, LED_ON);
-				setStepGreen(octaveStartStep + 1, LED_ON);
-				setStepRed(octaveStartStep + 1, LED_ON);
+
+				//currently selected note
+				if (currentNoteOctave == ((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM)-2 + octaveDrawingIndex) { 
+					setStepLed(octaveStartStep + tonePickerOffset[currentNoteTone], LED_ORANGE);
+				}
 			}
 
-			//currently selected note
-			if (currentNoteOctave == notePickerBottomOctave + octaveDrawingIndex) { 
-				setStepLed(octaveStartStep + tonePickerOffset[currentNoteTone], LED_ORANGE);
-			}
+			octaveStartStep -= 16;
 		}
-
-		octaveStartStep -= 16;
-	}
-	
-	//"scale picker" mode
-	if (padMode == PAD_MODE_SCALE_PICKER) {
+		//toggle selected note preview midi send
+		if (0 != (notePickerState & NOTE_PICKER_STATE_MASK_PREVIEW)) {
+			setLed(NOTE_PICKER_PREVIEW_PAD, LED_AMBER);
+		} else {
+			setLed(NOTE_PICKER_PREVIEW_PAD, LED_RED);
+		}
+		//channel picker
+		setLed(16, ((1 & (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL)) > 0)?LED_AMBER:0);
+		setLed(15, ((2 & (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL)) > 0)?LED_AMBER:0);
+		setLed(14, ((4 & (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL)) > 0)?LED_AMBER:0);
+		setLed(13, ((8 & (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL)) > 0)?LED_AMBER:0);
+		
+	} else { //"scale picker" mode // if (padMode == PAD_MODE_SCALE_PICKER) {
+		
 		if (activeSeqIndex >=0) {
 			for (uint8_t i=0; i<MAX_SCALE_SIZE; i++) {
 
@@ -1026,14 +1072,9 @@ void redrawNotePicker() {
 			}
 		}
 		//measure picker (moved from "note picker" into the "scale picker" mode)
-		redrawMeasurePicker(notePickerCurrentMeasure);
+		redrawMeasurePicker();
+		
 	}
-	
-	//channel picker
-	setLed(16, ((1 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
-	setLed(15, ((2 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
-	setLed(14, ((4 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
-	setLed(13, ((8 & notePickerCurrentChannel) > 0)?LED_AMBER:0);
 }
 
 //void lightScaleOffsetStep(uint8_t seqIndex, uint8_t) {
@@ -1277,21 +1318,30 @@ void padOnHandler(uint8_t padIndex) {
 	
 	if (padMode == PAD_MODE_NOTE_PICKER) {
 		
-		if (padIndex == PAD_UP && notePickerBottomOctave < 5) { //note picker octave switching
-			notePickerBottomOctave++;
+		if (padIndex == PAD_UP && ((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM) < 7) { //note picker octave switching
+			notePickerState = (notePickerState & ~NOTE_PICKER_STATE_MASK_BOTTOM) |
+				((((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM)+1)<<NOTE_PICKER_STATE_SHIFT_BOTTOM);
+			//notePickerBottomOctave++;
 			redrawNotePicker();
-		} else if (padIndex == PAD_DOWN && notePickerBottomOctave > -2) { //midi octaves go from -2 (c-2=0) to 8 (g+8=127)
-			notePickerBottomOctave--;
+		} else if (padIndex == PAD_DOWN && ((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM) > 0) { //midi octaves go from -2 (c-2=0) to 8 (g+8=127)
+			notePickerState = (notePickerState & ~NOTE_PICKER_STATE_MASK_BOTTOM) |
+				((((notePickerState & NOTE_PICKER_STATE_MASK_BOTTOM)>> NOTE_PICKER_STATE_SHIFT_BOTTOM)-1)<<NOTE_PICKER_STATE_SHIFT_BOTTOM);
+			//notePickerBottomOctave--;
 			redrawNotePicker();
 
+		} else if (padIndex == NOTE_PICKER_PREVIEW_PAD) { //toggle note preview
+			
+			notePickerState = notePickerState ^ NOTE_PICKER_STATE_MASK_PREVIEW;
+			redrawNotePicker();
+			
 		} else if (padIndex >= 13 && padIndex <= 16) { //select channel
 			
 			//TODO: note off before switching channel
-			if (padIndex == 16) notePickerCurrentChannel = notePickerCurrentChannel ^ 1;
-			if (padIndex == 15) notePickerCurrentChannel = notePickerCurrentChannel ^ 2;
-			if (padIndex == 14) notePickerCurrentChannel = notePickerCurrentChannel ^ 4;
-			if (padIndex == 13) notePickerCurrentChannel = notePickerCurrentChannel ^ 8;
-			setNotePickerChannel(notePickerCurrentChannel);
+			if (padIndex == 16) notePickerState = notePickerState ^ 1;
+			if (padIndex == 15) notePickerState = notePickerState ^ 2;
+			if (padIndex == 14) notePickerState = notePickerState ^ 4;
+			if (padIndex == 13) notePickerState = notePickerState ^ 8;
+			setNotePickerChannel(notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL);
 
 		} else if (stepPadIndex >= 0 && stepPadIndex < STEP_COUNT) {
 
@@ -1310,9 +1360,9 @@ void padOnHandler(uint8_t padIndex) {
 			setLedRed(PAD_USER_1, 0);
 
 		} else if (padIndex == PAD_USER_1) { //pressed again, turn off interactive note picker for running sequences
-			//midiNoteOff(notePickerCurrentNote, notePickerCurrentChannel);
+			//midiNoteOff(notePickerCurrentNote, (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL));
 			if (activeSeqIndex >= 0 && seqState[activeSeqIndex] != SEQ_STATE_OFF) {
-				setSeqBaseNoteAndChannel(activeSeqIndex, notePickerCurrentNote, notePickerCurrentChannel);
+				setSeqBaseNoteAndChannel(activeSeqIndex, notePickerCurrentNote, (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL));
 			}
 			applyNotePickerToSeqIndex = -1;
 			padMode = PAD_MODE_STEP_TOGGLE;
@@ -1338,7 +1388,7 @@ void padOnHandler(uint8_t padIndex) {
 			
 		} else if (stepPadIndex >= 0 && stepPadIndex < 16) { //measure selector
 			
-			notePickerCurrentMeasure = getMeasureFromStepPadIndex(stepPadIndex);
+			setMeasureFromStepPadIndex(stepPadIndex); //sets notePickerCurrentMeasure
 			
 			if (applyNotePickerToSeqIndex >= 0) { //apply measure change
 				//TODO: when changing measure, reset and/or rearm timing
@@ -1347,7 +1397,7 @@ void padOnHandler(uint8_t padIndex) {
 			
 			redrawNotePicker();
 			
-		} else {
+		} else { //scale bits toggle
 			
 			int8_t scaleBitIndex = (int8_t) pgm_read_byte(&(stepToScaleBit[stepPadIndex]));
 			
@@ -1570,7 +1620,8 @@ void padOnHandler(uint8_t padIndex) {
 					activePage = ((seqPageSlot[activeSeqIndex] & SEQ_PAGE_MASK)>> SEQ_PAGE_SHIFT); 
 				}
 				notePickerCurrentNote = seqBaseNote[activeSeqIndex];
-				notePickerCurrentChannel = seqChannel[activeSeqIndex];
+				notePickerState &= ~NOTE_PICKER_STATE_MASK_CHANNEL;
+				notePickerState |= (NOTE_PICKER_STATE_MASK_CHANNEL & seqChannel[activeSeqIndex]);
 				notePickerCurrentMeasure = seqMeasure[activeSeqIndex];
 				applyNotePickerToSeqIndex = activeSeqIndex;
 			} else {
@@ -1807,7 +1858,8 @@ void padOffHandler(uint8_t padIndex) {
 				setSeqState(activeSeqIndex, SEQ_STATE_HIGHLIGHTED, false);
 
 				notePickerCurrentNote = seqBaseNote[activeSeqIndex];
-				notePickerCurrentChannel = seqChannel[activeSeqIndex];
+				notePickerState &= ~NOTE_PICKER_STATE_MASK_CHANNEL;
+				notePickerState |= (NOTE_PICKER_STATE_MASK_CHANNEL & seqChannel[activeSeqIndex]);
 				notePickerCurrentMeasure = seqMeasure[activeSeqIndex];
 				applyNotePickerToSeqIndex = activeSeqIndex;
 			}
@@ -1842,7 +1894,7 @@ void padOffHandler(uint8_t padIndex) {
 				applyNotePickerToSeqIndex < 0 &&
 				(activeSeqIndex < 0 || seqState[activeSeqIndex] == SEQ_STATE_OFF) 
 			) {
-				midiNoteOff(notePickerCurrentNote, notePickerCurrentChannel);
+				midiNoteOff(notePickerCurrentNote, (notePickerState & NOTE_PICKER_STATE_MASK_CHANNEL));
 			}
 		}
 	} else if (padMode == PAD_MODE_STEP_TOGGLE) { 
